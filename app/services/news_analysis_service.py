@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import logging
 import re
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from html import unescape
-from typing import Final, Literal, TypedDict
+from typing import Final, Literal, Optional, TypedDict
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus
 from urllib.request import urlopen
@@ -29,7 +31,7 @@ class NewsAnalysisPayload(TypedDict):
     articles: list[NewsArticlePayload]
     overall_sentiment: SentimentLabel
     risk_keywords_detected: list[str]
-    error: str | None
+    error: Optional[str]
 
 
 class NewsAnalysisError(Exception):
@@ -79,6 +81,15 @@ class NewsAnalysisService:
     )
     _TAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"<[^>]+>")
     _WHITESPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
+    _BULLISH_PATTERNS: Final[tuple[re.Pattern[str], ...]] = tuple(
+        re.compile(rf"\b{re.escape(kw)}\b") for kw in _BULLISH_KEYWORDS
+    )
+    _BEARISH_PATTERNS: Final[tuple[re.Pattern[str], ...]] = tuple(
+        re.compile(rf"\b{re.escape(kw)}\b") for kw in _BEARISH_KEYWORDS
+    )
+    _RISK_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
+        kw: re.compile(rf"\b{re.escape(kw)}\b") for kw in _RISK_KEYWORDS
+    }
 
     def analyze_ticker_news(self, ticker: str) -> NewsAnalysisPayload:
         normalized_ticker = ticker.strip().upper()
@@ -148,11 +159,11 @@ class NewsAnalysisService:
         )
 
     @staticmethod
-    def _text_or_default(value: str | None, default: str) -> str:
+    def _text_or_default(value: Optional[str], default: str) -> str:
         cleaned = (value or "").strip()
         return cleaned or default
 
-    def _parse_publish_date(self, value: str | None) -> str:
+    def _parse_publish_date(self, value: Optional[str]) -> str:
         if not value:
             return ""
         try:
@@ -161,7 +172,7 @@ class NewsAnalysisService:
         except (TypeError, ValueError, OverflowError):
             return ""
 
-    def _clean_summary(self, value: str | None) -> str:
+    def _clean_summary(self, value: Optional[str]) -> str:
         raw = unescape(value or "")
         without_tags = self._TAG_PATTERN.sub(" ", raw)
         normalized = self._WHITESPACE_PATTERN.sub(" ", without_tags).strip()
@@ -171,8 +182,8 @@ class NewsAnalysisService:
 
     def _score_sentiment(self, *, title: str, summary: str) -> SentimentLabel:
         text = f"{title} {summary}".lower()
-        bullish_score = sum(1 for kw in self._BULLISH_KEYWORDS if kw in text)
-        bearish_score = sum(1 for kw in self._BEARISH_KEYWORDS if kw in text)
+        bullish_score = sum(1 for pattern in self._BULLISH_PATTERNS if pattern.search(text))
+        bearish_score = sum(1 for pattern in self._BEARISH_PATTERNS if pattern.search(text))
 
         if bullish_score > bearish_score:
             return "bullish"
@@ -192,7 +203,7 @@ class NewsAnalysisService:
 
     def _detect_risk_keywords(self, *, title: str, summary: str) -> list[str]:
         text = f"{title} {summary}".lower()
-        return [kw for kw in self._RISK_KEYWORDS if kw in text]
+        return [kw for kw, pattern in self._RISK_PATTERNS.items() if pattern.search(text)]
 
 
 @lru_cache

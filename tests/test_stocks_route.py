@@ -250,3 +250,8 @@ def test_stocks_analyze_with_news_uses_fallback_when_news_fails() -> None:
     assert data["news_analysis"]["articles"] == []
     assert data["news_analysis"]["overall_sentiment"] == "neutral"
     assert data["news_analysis"]["error"] == "Unexpected error while analyzing news."
+
+
+def test_stocks_analyze_with_news_ticker_too_long_returns_422() -> None:
+    response = TestClient(app).get("/api/v1/stocks/analyze/" + ("A" * 11))
+    assert response.status_code == 422

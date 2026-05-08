@@ -77,3 +77,38 @@ def test_analyze_ticker_news_detects_risk_keywords_and_bearish_tone(monkeypatch)
     assert "lawsuit" in article["risk_keywords"]
     assert "fraud" in article["risk_keywords"]
     assert "investigation" in payload["risk_keywords_detected"]
+
+
+def test_sentiment_keyword_matching_uses_word_boundaries(monkeypatch) -> None:
+    service = NewsAnalysisService()
+    xml_payload = b"""
+    <rss>
+      <channel>
+        <item>
+          <title>ABC dismisses market rumors</title>
+          <link>https://example.com/1</link>
+          <pubDate>Wed, 08 May 2026 10:00:00 GMT</pubDate>
+          <description>Leadership discusses strategy with stable guidance.</description>
+          <source url="https://example.com">Example News</source>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def read(self):
+            return xml_payload
+
+    monkeypatch.setattr(
+        "app.services.news_analysis_service.urlopen",
+        lambda *_args, **_kwargs: DummyResponse(),
+    )
+
+    payload = service.analyze_ticker_news("ABC")
+    assert payload["articles"][0]["sentiment"] == "neutral"

@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Literal
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -46,7 +49,7 @@ class NewsAnalysisResponse(BaseModel):
     articles: list[NewsArticleResponse]
     overall_sentiment: Literal["bullish", "bearish", "neutral"]
     risk_keywords_detected: list[str]
-    error: str | None = None
+    error: Optional[str] = None
 
 
 class FullStockAnalysisResponse(StockAnalysisResponse):
@@ -60,10 +63,7 @@ def _build_news_payload(
 ) -> dict:
     try:
         return news_service.analyze_ticker_news(normalized_ticker)
-    except NewsFetchError as exc:
-        logger.warning("News fetch failed for ticker %s", normalized_ticker)
-        return news_service.build_fallback_payload(str(exc))
-    except NewsAnalysisError as exc:
+    except (NewsFetchError, NewsAnalysisError) as exc:
         logger.warning("News analysis failed for ticker %s", normalized_ticker)
         return news_service.build_fallback_payload(str(exc))
     except Exception:
@@ -141,7 +141,7 @@ async def get_stock_analysis(
     response_model=FullStockAnalysisResponse,
 )
 async def analyze_stock_with_news(
-    ticker: str,
+    ticker: str = Path(..., min_length=1, max_length=10, description="Stock symbol"),
     stock_service: StockAnalysisService = Depends(get_stock_analysis_service),
     news_service: NewsAnalysisService = Depends(get_news_analysis_service),
 ) -> dict:
