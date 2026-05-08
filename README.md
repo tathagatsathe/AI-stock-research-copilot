@@ -75,7 +75,18 @@ API will be available at:
 ## Endpoints
 
 - `GET /api/v1/health` - health check
-- `GET /api/v1/stocks/analysis?ticker=AAPL` - baseline stock analysis via service + agent layers
+- `GET /api/v1/stocks/analysis?ticker=AAPL` - stock analysis from Yahoo Finance via service layer
+
+Example response:
+
+```json
+{
+  "ticker": "AAPL",
+  "current_price": 197.12,
+  "sma_50": 190.73,
+  "rsi": 58.42
+}
+```
 
 ## Docker
 

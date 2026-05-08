@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     api_v1_prefix: str = Field(default="/api/v1")
     log_level: str = Field(default="INFO")
     langgraph_enabled: bool = Field(default=False)
+    stock_analysis_timeout_seconds: float = Field(default=8.0, gt=0)
 
     model_config = SettingsConfigDict(
         env_file=".env",
