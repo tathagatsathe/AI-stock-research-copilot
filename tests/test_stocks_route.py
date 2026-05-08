@@ -11,6 +11,10 @@ from app.services.stock_analysis_service import (
     StockAnalysisService,
     get_stock_analysis_service,
 )
+from app.services.news_analysis_service import (
+    NewsAnalysisService,
+    get_news_analysis_service,
+)
 
 
 class StubSuccessService(StockAnalysisService):
@@ -56,6 +60,31 @@ class StubNegativePriceService(StockAnalysisService):
             "sma_50": 120.0,
             "rsi": 45.0,
         }
+
+
+class StubSuccessNewsService(NewsAnalysisService):
+    def analyze_ticker_news(self, ticker: str) -> dict:
+        return {
+            "source": "google_news_rss",
+            "articles": [
+                {
+                    "title": f"{ticker} beats expectations",
+                    "source": "Example News",
+                    "publish_date": "",
+                    "summary": "Profit growth and upgrade chatter.",
+                    "sentiment": "bullish",
+                    "risk_keywords": [],
+                }
+            ],
+            "overall_sentiment": "bullish",
+            "risk_keywords_detected": [],
+            "error": None,
+        }
+
+
+class StubFallbackNewsService(NewsAnalysisService):
+    def analyze_ticker_news(self, ticker: str) -> dict:
+        return self.build_fallback_payload("Failed to fetch latest news from Google News RSS.")
 
 
 class StubNewsSuccessService(NewsAnalysisService):
@@ -218,6 +247,54 @@ def test_stocks_analysis_runs_service_in_threadpool(monkeypatch: pytest.MonkeyPa
     assert response.status_code == 200
     assert captured["func_name"] == "analyze_stock"
     assert captured["kwargs"] == {"ticker": "aapl"}
+
+
+def test_analyze_endpoint_integration_success() -> None:
+    app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
+    app.dependency_overrides[get_news_analysis_service] = lambda: StubSuccessNewsService()
+    try:
+        response = TestClient(app).get("/api/v1/stocks/analyze/AAPL")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ticker"] == "AAPL"
+    assert payload["news_analysis"]["overall_sentiment"] == "bullish"
+    assert payload["news_analysis"]["error"] is None
+
+
+def test_analyze_endpoint_integration_with_news_fallback_payload() -> None:
+    app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
+    app.dependency_overrides[get_news_analysis_service] = lambda: StubFallbackNewsService()
+    try:
+        response = TestClient(app).get("/api/v1/stocks/analyze/AAPL")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ticker"] == "AAPL"
+    assert payload["news_analysis"]["articles"] == []
+    assert payload["news_analysis"]["overall_sentiment"] == "neutral"
+    assert payload["news_analysis"]["error"] == "Failed to fetch latest news from Google News RSS."
+
+
+def test_analyze_endpoint_invalid_ticker_maps_to_400() -> None:
+    app.dependency_overrides[get_stock_analysis_service] = lambda: StubInvalidTickerService()
+    app.dependency_overrides[get_news_analysis_service] = lambda: StubSuccessNewsService()
+    try:
+        response = TestClient(app).get("/api/v1/stocks/analyze/INVALID$")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Bad ticker"
+
+
+def test_analyze_endpoint_ticker_too_long_returns_422() -> None:
+    response = TestClient(app).get(f"/api/v1/stocks/analyze/{'A' * 11}")
+    assert response.status_code == 422
 
 
 def test_stocks_analyze_with_news_returns_combined_payload() -> None:
