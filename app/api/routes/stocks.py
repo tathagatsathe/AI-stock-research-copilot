@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 import yfinance as yf
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -27,6 +27,7 @@ from app.services.stock_analysis_service import (
 )
 from app.services.stock_universe_service import StockUniverseService, get_stock_universe_service
 from app.services.strategy_ratings_service import DISCLAIMER, get_strategy_ratings_service
+from app.services.strategy_frameworks_service import get_strategy_frameworks_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ class FullStockAnalysisResponse(StockAnalysisResponse):
     fundamentals: FundamentalsSnapshotResponse
     macro: MacroContextResponse
     strategy_ratings: StrategyRatingsResponse
+    strategy_frameworks: Dict[str, Any]
     disclaimer: str
 
 
@@ -151,14 +153,20 @@ def _build_news_payload(
         return news_service.build_fallback_payload("Unexpected error while analyzing news.")
 
 
-def _fetch_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict]:
-    """Single Yahoo Finance ticker pull: technicals + fundamentals (avoids duplicate symbol fetch)."""
+def _fetch_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict, dict]:
+    """Single Yahoo Finance ticker pull: technicals + fundamentals + strategy frameworks."""
     normalized = stock_service.normalize_ticker(ticker)
     yft = yf.Ticker(normalized)
     history = yft.history(period="6mo", interval="1d", auto_adjust=False)
     stock_payload = stock_service.technicals_from_history(normalized, history)
     fundamentals_payload = get_fundamentals_service().snapshot_from_ticker(yft, normalized)
-    return stock_payload, fundamentals_payload
+    strategy_frameworks = get_strategy_frameworks_service().build(
+        ticker=yft,
+        normalized_symbol=normalized,
+        fundamentals=fundamentals_payload,
+        stock=stock_payload,
+    )
+    return stock_payload, fundamentals_payload, strategy_frameworks
 
 
 def _macro_snapshot_sync() -> dict:
@@ -174,7 +182,7 @@ async def _build_full_stock_analysis(
 ) -> dict:
     normalized_ticker = ticker.strip().upper()
 
-    async def equity_job() -> tuple[dict, dict]:
+    async def equity_job() -> tuple[dict, dict, dict]:
         return await asyncio.wait_for(
             run_in_threadpool(_fetch_equity_bundle, ticker, stock_service),
             timeout=settings.stock_analysis_timeout_seconds,
@@ -193,7 +201,7 @@ async def _build_full_stock_analysis(
             timeout=settings.stock_analysis_timeout_seconds,
         )
 
-    (stock_payload, fundamentals_payload), news_payload, macro_payload = await asyncio.gather(
+    (stock_payload, fundamentals_payload, strategy_frameworks), news_payload, macro_payload = await asyncio.gather(
         equity_job(),
         news_job(),
         macro_job(),
@@ -202,6 +210,7 @@ async def _build_full_stock_analysis(
     merged = {
         **stock_payload,
         "news_analysis": news_payload,
+        "strategy_frameworks": strategy_frameworks,
     }
     brief = get_decision_brief_service().build(stock=stock_payload, news=news_payload)
     strategy_ratings = get_strategy_ratings_service().build(
@@ -298,7 +307,8 @@ async def get_stock_analysis(
     summary="Get stock analysis with news signals",
     description=(
         "Returns technical indicators, headline sentiment, fundamentals snapshot, VIX-based macro "
-        "context, and deterministic 1–10 strategy scores (not investment advice)."
+        "context, deterministic 1–10 strategy scores, and structured Buffett/Magic Formula/GARP/factor "
+        "metrics (not investment advice)."
     ),
     response_model=FullStockAnalysisResponse,
 )

@@ -131,3 +131,44 @@ App will run at `http://127.0.0.1:8000`.
 
 `app/agents/workflow.py` contains the orchestration abstraction (`WorkflowOrchestrator`).
 Replace the placeholder logic with a compiled LangGraph workflow and node graph execution when implementing production agent flows.
+
+
+# Context
+Act as a Senior Backend Software Engineer. We are extending our existing financial analysis API. Currently, the API fetches basic stock data, but we need to pivot and build a robust, multi-strategy fundamental analysis and valuation engine. 
+
+# Objective
+Create a modular Python service (using `yfinance` and `pandas`) that analyzes a given stock ticker across five distinct investment frameworks. The output should be a structured JSON response containing the analysis from each strategy, alongside an aggregated "Buy/Sell/Hold" signal.
+
+# Task Requirements
+Please implement a `FundamentalAnalysisService` class with the following asynchronous methods:
+
+## 1. The Buffett Quality & DCF Strategy
+*   **Moat Check:** Calculate the 5-year average Gross Margin. Flag as a "pass" if it's consistently >40% with low variance.
+*   **Return Check:** Calculate if Return on Invested Capital (ROIC) is consistently higher than the Weighted Average Cost of Capital (WACC).
+*   **Valuation:** Implement a Discounted Cash Flow (DCF) model using "Owner's Earnings" (Operating Cash Flow minus Maintenance CapEx). 
+*   **Dynamic Discount Rate:** Fetch the current 10-Year Treasury Yield to use as the risk-free rate, and add a standard Equity Risk Premium (e.g., 5%) scaled by the stock's Beta.
+*   **Margin of Safety:** Apply a 30% discount to the calculated intrinsic value to output a `target_buy_price`.
+
+## 2. Magic Formula (Greenblatt)
+*   Calculate **Earnings Yield** (EBIT / Enterprise Value).
+*   Calculate **Return on Capital** (EBIT / (Net Working Capital + Net Fixed Assets)).
+*   *Note:* Since we are evaluating a single ticker per request, output the raw percentages so our frontend can compare them against historical industry baselines.
+
+## 3. GARP (Growth at a Reasonable Price)
+*   Calculate the **PEG Ratio** (Current P/E Ratio divided by the 3-year historical EPS Growth Rate).
+*   Flag as "Buy" if PEG < 1.0, and "Sell" if PEG > 2.0.
+
+## 4. Factor Metrics (Value & Momentum)
+*   **Value:** Calculate the Price-to-Book (P/B) ratio.
+*   **Momentum:** Calculate the 6-month price momentum (Current Price / Price 6 months ago - 1).
+
+## 5. Aggregated Output
+*   Create a master method `analyze_ticker(ticker_symbol: str)` that runs all the above strategies concurrently using `asyncio.gather` and returns a compiled dictionary.
+
+# Architectural & Performance Guidelines
+*   **Rate Limiting & Reliability:** `yfinance` is prone to rate limits. Implement a caching strategy (e.g., using `Redis` or `functools.lru_cache` with a TTL of 24 hours) for the raw financial statement fetches.
+*   **Asynchronous Execution:** Ensure I/O bound tasks (fetching income statements, balance sheets, cash flows, and treasury yields) are non-blocking.
+*   **Error Handling:** If `yfinance` returns missing data for a specific metric (e.g., missing CapEx), the service should gracefully degrade that specific strategy's output to `null` rather than crashing the entire endpoint.
+*   **Design Pattern:** Use the Strategy Pattern or keep the code highly modular so we can easily add or remove investment frameworks in the future.
+
+Please generate the complete Python code for this service, including the necessary Pydantic models (or standard Dataclasses) for structuring the final JSON response.

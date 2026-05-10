@@ -26,8 +26,24 @@ class StubSuccessService(StockAnalysisService):
         }
 
 
-def _fake_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict]:
+def _fake_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict, dict]:
     sym = ticker.strip().upper()
+    strategy_frameworks = {
+        "buffett_quality_dcf": {
+            "moat_check": {
+                "five_year_avg_gross_margin_pct": None,
+                "gross_margin_std_pct_points": None,
+                "yearly_gross_margins_pct": [],
+                "pass": None,
+                "warnings": [],
+            },
+            "return_check": {"by_period": [], "pass_roic_above_wacc_recent": None, "warnings": []},
+            "valuation_dcf": {"warnings": [], "intrinsic_value_per_share": None, "target_buy_price": None},
+        },
+        "magic_formula": {"earnings_yield_pct": None, "return_on_capital_pct": None},
+        "garp": {"peg_ratio": None, "signal": None, "warnings": []},
+        "factor_metrics": {"price_to_book": None, "momentum_6m_pct": None},
+    }
     return (
         {
             "ticker": sym,
@@ -45,6 +61,7 @@ def _fake_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tup
             "warnings": [],
             "fields": {"trailing_pe": 20.0, "dividend_yield": 0.02},
         },
+        strategy_frameworks,
     )
 
 
@@ -314,6 +331,8 @@ def test_analyze_endpoint_integration_success(monkeypatch: pytest.MonkeyPatch) -
         "dividend",
         "quality",
     }
+    assert "strategy_frameworks" in payload
+    assert "buffett_quality_dcf" in payload["strategy_frameworks"]
     assert "disclaimer" in payload and payload["disclaimer"]
 
 
@@ -336,7 +355,7 @@ def test_analyze_endpoint_integration_with_news_fallback_payload(monkeypatch: py
 
 
 def test_analyze_endpoint_invalid_ticker_maps_to_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    def failing_bundle(_ticker: str, _stock_service: StockAnalysisService) -> tuple[dict, dict]:
+    def failing_bundle(_ticker: str, _stock_service: StockAnalysisService) -> tuple[dict, dict, dict]:
         raise InvalidTickerError("Bad ticker")
 
     monkeypatch.setattr(stocks_route, "_fetch_equity_bundle", failing_bundle)
