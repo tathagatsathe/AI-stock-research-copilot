@@ -22,6 +22,28 @@ const tooltips = {
   default: "Financial metric utilized in the fundamental analysis."
 };
 
+const fundamentalCategories = [
+  { name: 'Valuation', keys: ['market_cap', 'enterprise_value', 'trailing_pe', 'forward_pe', 'price_to_book'] },
+  { name: 'Profitability', keys: ['profit_margins', 'operating_margins', 'return_on_equity'] },
+  { name: 'Growth', keys: ['revenue_growth', 'earnings_growth', 'earnings_quarterly_growth'] },
+  { name: 'Financial Health', keys: ['debt_to_equity', 'current_ratio', 'quick_ratio', 'derived_current_ratio', 'total_debt_info', 'total_debt', 'total_cash_info', 'cash_and_equivalents', 'current_assets', 'current_liabilities', 'total_assets', 'stockholders_equity', 'book_value'] },
+  { name: 'Income Statement', keys: ['total_revenue', 'net_income', 'operating_income'] },
+  { name: 'Cash Flow & Dividends', keys: ['free_cashflow', 'operating_cashflow', 'dividend_yield', 'payout_ratio'] },
+  { name: 'Market Dynamics', keys: ['beta'] }
+];
+
+const formatLargeNumber = (value) => {
+  if (typeof value !== 'number') return value;
+  if (Math.abs(value) >= 1.0e12) {
+    return (value / 1.0e12).toFixed(2) + 'T';
+  } else if (Math.abs(value) >= 1.0e9) {
+    return (value / 1.0e9).toFixed(2) + 'B';
+  } else if (Math.abs(value) >= 1.0e6) {
+    return (value / 1.0e6).toFixed(2) + 'M';
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+};
+
 function App() {
   const [universe, setUniverse] = useState([]);
   const [selectedStock, setSelectedStock] = useState(null);
@@ -368,26 +390,67 @@ function App() {
                   {/* Fundamentals */}
                   {analysis.fundamentals && analysis.fundamentals.fields && (
                     <motion.div variants={itemVariants} className="bg-neutral-800/40 rounded-xl p-6 border border-neutral-700/50">
-                      <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                      <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
                         <Activity className="w-5 h-5 text-accent-cyan" /> Fundamentals ({analysis.fundamentals.currency})
                       </h3>
-                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                        {Object.entries(analysis.fundamentals.fields).map(([key, value]) => (
-                          value !== null && (
-                            <div key={key} className="bg-neutral-800/50 p-3 rounded border border-neutral-700/50 relative group">
-                              <div className="flex justify-between items-start mb-1">
-                                <p className="text-[10px] text-neutral-400 uppercase tracking-wider pr-2">{key.replace(/_/g, ' ')}</p>
-                                <div className="cursor-help relative shrink-0">
-                                  <Info className="w-2.5 h-2.5 text-neutral-500 hover:text-accent-cyan transition-colors" />
-                                  <div className="hidden group-hover:block absolute bottom-full right-0 mb-2 w-48 p-2 bg-neutral-900 border border-neutral-700 rounded shadow-xl text-xs text-neutral-300 z-50 whitespace-normal">
-                                    {tooltips[key] || tooltips.default}
-                                  </div>
-                                </div>
+                      <div className="space-y-6">
+                        {fundamentalCategories.map(category => {
+                          const categoryFields = category.keys.filter(key => analysis.fundamentals.fields[key] !== undefined && analysis.fundamentals.fields[key] !== null);
+                          if (categoryFields.length === 0) return null;
+                          return (
+                            <div key={category.name}>
+                              <h4 className="text-sm font-semibold text-accent-cyan mb-3 border-b border-neutral-700/50 pb-1">{category.name}</h4>
+                              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                                {categoryFields.map(key => {
+                                  const value = analysis.fundamentals.fields[key];
+                                  return (
+                                    <div key={key} className="bg-neutral-800/50 p-2.5 rounded border border-neutral-700/50 relative group">
+                                      <div className="flex justify-between items-start mb-1">
+                                        <p className="text-[9px] text-neutral-400 uppercase tracking-wider pr-2 truncate" title={key.replace(/_/g, ' ')}>{key.replace(/_/g, ' ')}</p>
+                                        <div className="cursor-help relative shrink-0">
+                                          <Info className="w-2.5 h-2.5 text-neutral-500 hover:text-accent-cyan transition-colors" />
+                                          <div className="hidden group-hover:block absolute bottom-full right-0 mb-2 w-48 p-2 bg-neutral-900 border border-neutral-700 rounded shadow-xl text-xs text-neutral-300 z-50 whitespace-normal">
+                                            {tooltips[key] || tooltips.default}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <p className="text-xs font-bold text-white truncate" title={value}>{formatLargeNumber(value)}</p>
+                                    </div>
+                                  );
+                                })}
                               </div>
-                              <p className="text-sm font-bold text-white">{typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : value}</p>
                             </div>
-                          )
-                        ))}
+                          );
+                        })}
+                        {(() => {
+                          const allCategorizedKeys = new Set(fundamentalCategories.flatMap(c => c.keys));
+                          const otherKeys = Object.keys(analysis.fundamentals.fields).filter(key => !allCategorizedKeys.has(key) && analysis.fundamentals.fields[key] !== null);
+                          if (otherKeys.length === 0) return null;
+                          return (
+                            <div key="Other">
+                              <h4 className="text-sm font-semibold text-accent-cyan mb-3 border-b border-neutral-700/50 pb-1">Other Metrics</h4>
+                              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                                {otherKeys.map(key => {
+                                  const value = analysis.fundamentals.fields[key];
+                                  return (
+                                    <div key={key} className="bg-neutral-800/50 p-2.5 rounded border border-neutral-700/50 relative group">
+                                      <div className="flex justify-between items-start mb-1">
+                                        <p className="text-[9px] text-neutral-400 uppercase tracking-wider pr-2 truncate" title={key.replace(/_/g, ' ')}>{key.replace(/_/g, ' ')}</p>
+                                        <div className="cursor-help relative shrink-0">
+                                          <Info className="w-2.5 h-2.5 text-neutral-500 hover:text-accent-cyan transition-colors" />
+                                          <div className="hidden group-hover:block absolute bottom-full right-0 mb-2 w-48 p-2 bg-neutral-900 border border-neutral-700 rounded shadow-xl text-xs text-neutral-300 z-50 whitespace-normal">
+                                            {tooltips[key] || tooltips.default}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <p className="text-xs font-bold text-white truncate" title={value}>{typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : value}</p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </motion.div>
                   )}
