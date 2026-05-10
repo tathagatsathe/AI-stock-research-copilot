@@ -1,6 +1,11 @@
-# AI Stock Analysis Backend (FastAPI)
+# AI Stock Analysis & Research Copilot
 
-Production-ready starter backend for an AI stock analysis platform using FastAPI with a modular, LangGraph-ready architecture.
+<p align="center">
+  <img src="Demo-UI.gif" alt="AI Stock Research Copilot Demo" width="800">
+</p>
+
+Production-ready AI stock analysis platform featuring a premium dashboard and a modular, LangGraph-ready backend.
+
 
 ## Features
 
@@ -47,7 +52,11 @@ Production-ready starter backend for an AI stock analysis platform using FastAPI
 │   │   ├── strategy_ratings_service.py
 │   │   └── stock_universe_service.py
 │   └── main.py
+├── frontend
+│   ├── src
+│   └── ...
 ├── .env.example
+├── Demo-UI.gif
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
