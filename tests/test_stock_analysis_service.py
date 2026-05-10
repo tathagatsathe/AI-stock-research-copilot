@@ -45,6 +45,19 @@ def test_rsi_returns_50_for_flat_prices(service: StockAnalysisService) -> None:
     assert rsi == 50.0
 
 
+def test_analyze_stock_includes_return_20d_when_enough_history(
+    service: StockAnalysisService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummyTicker:
+        def history(self, **kwargs):
+            closes = [100.0 + float(i) * 0.5 for i in range(60)]
+            return _history_from_closes(closes)
+
+    monkeypatch.setattr("app.services.stock_analysis_service.yf.Ticker", lambda _: DummyTicker())
+    payload = service.analyze_stock("AAPL")
+    assert payload["return_20d_pct"] is not None
+
+
 def test_analyze_stock_success_payload_shape(service: StockAnalysisService, monkeypatch: pytest.MonkeyPatch) -> None:
     class DummyTicker:
         def history(self, **kwargs):

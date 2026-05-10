@@ -8,9 +8,19 @@ Production-ready starter backend for an AI stock analysis platform using FastAPI
 - Modular folder structure (`api`, `services`, `agents`, `core`)
 - Environment-based configuration via `.env`
 - Health check endpoint
+- Stock technicals (price, 50-day SMA, RSI, optional 20-trading-day return) via Yahoo Finance
+- Headline sentiment / keyword risk scan via Google News RSS (keyword heuristic; not deep NLP)
+- Fundamentals snapshot from Yahoo Finance (`info` plus latest reported statements when available)
+- Macro backdrop via CBOE VIX (^VIX): spot level, short drift, and a 1–10 “risk climate” score
+- Deterministic 1–10 scores for preset strategies: Value, Growth, Momentum, Dividend, Quality (research-assistance only)
 - Service and agent abstraction layer for AI workflows
 - LangGraph dependency included and orchestrator scaffolded
 - Docker and Docker Compose support
+
+### Limitations
+
+- Data is sourced from **free/public Yahoo endpoints** and RSS feeds; coverage gaps, delays, and occasional malformed quotes happen—API responses include `coverage` / `warnings` fields where relevant.
+- Strategy scores and the decision brief are **rule-based heuristics**, not investment advice, forecasts, or suitability judgments (see `disclaimer` on full analysis responses).
 
 ## Project Structure
 
@@ -29,7 +39,12 @@ Production-ready starter backend for an AI stock analysis platform using FastAPI
 │   ├── core
 │   │   └── config.py
 │   ├── services
-│   │   └── stock_analysis_service.py
+│   │   ├── stock_analysis_service.py
+│   │   ├── news_analysis_service.py
+│   │   ├── decision_brief_service.py
+│   │   ├── fundamentals_service.py
+│   │   ├── macro_instability_service.py
+│   │   └── strategy_ratings_service.py
 │   └── main.py
 ├── .env.example
 ├── Dockerfile
@@ -74,8 +89,8 @@ API will be available at:
 
 ## Endpoints
 
-- `GET /api/v1/health` - health check
-- `GET /api/v1/stocks/analysis?ticker=AAPL` - stock analysis from Yahoo Finance via service layer
+- `GET /api/v1/health` — health check
+- `GET /api/v1/stocks/analysis?ticker=AAPL` — technical snapshot only (Yahoo Finance)
 
 Example response:
 
@@ -84,9 +99,18 @@ Example response:
   "ticker": "AAPL",
   "current_price": 197.12,
   "sma_50": 190.73,
-  "rsi": 58.42
+  "rsi": 58.42,
+  "return_20d_pct": 3.21
 }
 ```
+
+- `GET /api/v1/stocks/analyze/{ticker}` — full payload: technicals, Google News RSS signals, fundamentals snapshot, VIX-based macro context, preset strategy scores (1–10), and a short rule-based decision brief.
+
+The full response always includes a top-level `disclaimer` string. Other notable sections:
+
+- `fundamentals` — `coverage` (`high` / `partial` / `low`), `warnings`, and normalized numeric `fields`
+- `macro` — `vix_level`, `vix_change_5d_pct`, `volatility_regime`, `instability_score_1_10`
+- `strategy_ratings` — entries for `value`, `growth`, `momentum`, `dividend`, and `quality`, each with `score_1_10`, `confidence`, `drivers`, `headwinds`, and `score_label`
 
 ## Docker
 

@@ -1,8 +1,9 @@
 import asyncio
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
+import app.api.routes.stocks as stocks_route
 from app.main import app
 from app.services.news_analysis_service import NewsAnalysisService, get_news_analysis_service
 from app.services.stock_analysis_service import (
@@ -10,10 +11,6 @@ from app.services.stock_analysis_service import (
     InvalidTickerError,
     StockAnalysisService,
     get_stock_analysis_service,
-)
-from app.services.news_analysis_service import (
-    NewsAnalysisService,
-    get_news_analysis_service,
 )
 
 
@@ -24,7 +21,48 @@ class StubSuccessService(StockAnalysisService):
             "current_price": 123.45,
             "sma_50": 120.0,
             "rsi": 55.0,
+            "return_20d_pct": 2.0,
         }
+
+
+def _fake_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict]:
+    sym = ticker.strip().upper()
+    return (
+        {
+            "ticker": sym,
+            "current_price": 123.45,
+            "sma_50": 120.0,
+            "rsi": 55.0,
+            "return_20d_pct": 2.0,
+        },
+        {
+            "ticker": sym,
+            "source": "yfinance",
+            "currency": "USD",
+            "as_of": None,
+            "coverage": "partial",
+            "warnings": [],
+            "fields": {"trailing_pe": 20.0, "dividend_yield": 0.02},
+        },
+    )
+
+
+def _fake_macro_snapshot() -> dict:
+    return {
+        "source": "yfinance",
+        "symbol": "^VIX",
+        "vix_level": 17.5,
+        "vix_change_5d_pct": -2.0,
+        "volatility_regime": "normal",
+        "instability_score_1_10": 5,
+        "coverage": "high",
+        "error": None,
+    }
+
+
+def _patch_analyze_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(stocks_route, "_fetch_equity_bundle", _fake_equity_bundle)
+    monkeypatch.setattr(stocks_route, "_macro_snapshot_sync", _fake_macro_snapshot)
 
 
 class StubInvalidTickerService(StockAnalysisService):
@@ -249,7 +287,8 @@ def test_stocks_analysis_runs_service_in_threadpool(monkeypatch: pytest.MonkeyPa
     assert captured["kwargs"] == {"ticker": "aapl"}
 
 
-def test_analyze_endpoint_integration_success() -> None:
+def test_analyze_endpoint_integration_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_analyze_upstream(monkeypatch)
     app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
     app.dependency_overrides[get_news_analysis_service] = lambda: StubSuccessNewsService()
     try:
@@ -262,9 +301,23 @@ def test_analyze_endpoint_integration_success() -> None:
     assert payload["ticker"] == "AAPL"
     assert payload["news_analysis"]["overall_sentiment"] == "bullish"
     assert payload["news_analysis"]["error"] is None
+    assert payload["decision_brief"]["verdict"] in {"watch", "cautious", "elevated_risk"}
+    assert len(payload["decision_brief"]["summary_bullets"]) == 3
+    assert payload["fundamentals"]["coverage"] == "partial"
+    assert payload["macro"]["instability_score_1_10"] == 5
+    assert "strategy_ratings" in payload
+    assert set(payload["strategy_ratings"].keys()) == {
+        "value",
+        "growth",
+        "momentum",
+        "dividend",
+        "quality",
+    }
+    assert "disclaimer" in payload and payload["disclaimer"]
 
 
-def test_analyze_endpoint_integration_with_news_fallback_payload() -> None:
+def test_analyze_endpoint_integration_with_news_fallback_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_analyze_upstream(monkeypatch)
     app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
     app.dependency_overrides[get_news_analysis_service] = lambda: StubFallbackNewsService()
     try:
@@ -278,13 +331,20 @@ def test_analyze_endpoint_integration_with_news_fallback_payload() -> None:
     assert payload["news_analysis"]["articles"] == []
     assert payload["news_analysis"]["overall_sentiment"] == "neutral"
     assert payload["news_analysis"]["error"] == "Failed to fetch latest news from Google News RSS."
+    assert payload["decision_brief"]["evidence_quality"] == "low"
 
 
-def test_analyze_endpoint_invalid_ticker_maps_to_400() -> None:
-    app.dependency_overrides[get_stock_analysis_service] = lambda: StubInvalidTickerService()
+def test_analyze_endpoint_invalid_ticker_maps_to_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing_bundle(_ticker: str, _stock_service: StockAnalysisService) -> tuple[dict, dict]:
+        raise InvalidTickerError("Bad ticker")
+
+    monkeypatch.setattr(stocks_route, "_fetch_equity_bundle", failing_bundle)
+    monkeypatch.setattr(stocks_route, "_macro_snapshot_sync", _fake_macro_snapshot)
+
+    app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
     app.dependency_overrides[get_news_analysis_service] = lambda: StubSuccessNewsService()
     try:
-        response = TestClient(app).get("/api/v1/stocks/analyze/INVALID$")
+        response = TestClient(app).get("/api/v1/stocks/analyze/AAPL")
     finally:
         app.dependency_overrides.clear()
 
@@ -297,7 +357,8 @@ def test_analyze_endpoint_ticker_too_long_returns_422() -> None:
     assert response.status_code == 422
 
 
-def test_stocks_analyze_with_news_returns_combined_payload() -> None:
+def test_stocks_analyze_with_news_returns_combined_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_analyze_upstream(monkeypatch)
     app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
     app.dependency_overrides[get_news_analysis_service] = lambda: StubNewsSuccessService()
     try:
@@ -311,9 +372,11 @@ def test_stocks_analyze_with_news_returns_combined_payload() -> None:
     assert data["news_analysis"]["overall_sentiment"] == "bullish"
     assert len(data["news_analysis"]["articles"]) == 1
     assert data["news_analysis"]["articles"][0]["title"].startswith("AAPL")
+    assert "decision_brief" in data
 
 
-def test_stocks_analyze_with_news_uses_fallback_when_news_fails() -> None:
+def test_stocks_analyze_with_news_uses_fallback_when_news_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_analyze_upstream(monkeypatch)
     app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
     app.dependency_overrides[get_news_analysis_service] = lambda: StubNewsFailureService()
     try:
@@ -327,6 +390,7 @@ def test_stocks_analyze_with_news_uses_fallback_when_news_fails() -> None:
     assert data["news_analysis"]["articles"] == []
     assert data["news_analysis"]["overall_sentiment"] == "neutral"
     assert data["news_analysis"]["error"] == "Unexpected error while analyzing news."
+    assert data["decision_brief"]["verdict"] == "cautious"
 
 
 def test_stocks_analyze_with_news_ticker_too_long_returns_422() -> None:

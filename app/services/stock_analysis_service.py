@@ -24,7 +24,7 @@ class DataFetchError(StockAnalysisError):
 class StockAnalysisService:
     _TICKER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 
-    def analyze_stock(self, ticker: str) -> dict:
+    def normalize_ticker(self, ticker: str) -> str:
         normalized_ticker = ticker.strip().upper()
         if not normalized_ticker:
             raise InvalidTickerError("Ticker symbol cannot be empty.")
@@ -32,6 +32,10 @@ class StockAnalysisService:
             raise InvalidTickerError(
                 "Ticker symbol must start with a letter and contain only letters, digits, '.', or '-'."
             )
+        return normalized_ticker
+
+    def analyze_stock(self, ticker: str) -> dict:
+        normalized_ticker = self.normalize_ticker(ticker)
 
         try:
             stock = yf.Ticker(normalized_ticker)
@@ -40,6 +44,9 @@ class StockAnalysisService:
             logger.exception("Yahoo Finance request failed for ticker %s", normalized_ticker)
             raise DataFetchError("Failed to fetch stock data from Yahoo Finance.") from exc
 
+        return self.technicals_from_history(normalized_ticker, history)
+
+    def technicals_from_history(self, normalized_ticker: str, history: pd.DataFrame) -> dict:
         if history.empty or "Close" not in history:
             logger.info("No historical data available for ticker %s", normalized_ticker)
             raise InvalidTickerError(
@@ -57,12 +64,21 @@ class StockAnalysisService:
         sma_50 = float(round(close_series.rolling(window=50).mean().iloc[-1], 2))
         rsi = self._calculate_rsi(close_series, period=14)
 
-        return {
+        return_20d_pct: float | None = None
+        if len(close_series) >= 21:
+            last = float(close_series.iloc[-1])
+            prior = float(close_series.iloc[-21])
+            if prior != 0:
+                return_20d_pct = float(round((last / prior - 1.0) * 100.0, 2))
+
+        payload: dict[str, float | str | None] = {
             "ticker": normalized_ticker,
             "current_price": current_price,
             "sma_50": sma_50,
             "rsi": rsi,
+            "return_20d_pct": return_20d_pct,
         }
+        return payload
 
     @staticmethod
     def _calculate_rsi(close_series: pd.Series, period: int = 14) -> float:
