@@ -13,8 +13,8 @@ export default {
         dark: '#000000',
         'glass-bg': 'rgba(255, 255, 255, 0.03)',
         'glass-border': 'rgba(255, 255, 255, 0.08)',
-        'accent-cyan': '#22d3ee',
-        'accent-purple': '#a855f7',
+        'accent-cyan': '#10b981',
+        'accent-purple': '#14b8a6',
       },
       animation: {
         'blob': 'blob 7s infinite',
