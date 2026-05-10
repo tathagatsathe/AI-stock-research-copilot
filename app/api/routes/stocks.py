@@ -25,6 +25,7 @@ from app.services.stock_analysis_service import (
     StockAnalysisService,
     get_stock_analysis_service,
 )
+from app.services.stock_universe_service import StockUniverseService, get_stock_universe_service
 from app.services.strategy_ratings_service import DISCLAIMER, get_strategy_ratings_service
 
 router = APIRouter()
@@ -113,6 +114,28 @@ class FullStockAnalysisResponse(StockAnalysisResponse):
     disclaimer: str
 
 
+class StockUniverseItemResponse(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=10)
+    name: str = Field(..., min_length=1)
+    price: float = Field(..., ge=0)
+    change_pct: Optional[float] = None
+    market_cap: Optional[float] = Field(
+        default=None,
+        description="Market capitalization in listing currency when Yahoo provides it.",
+    )
+    volume: Optional[int] = Field(default=None, ge=0)
+    currency: str = Field(default="USD", min_length=3, max_length=6)
+    exchange: Optional[str] = None
+
+
+class StockUniverseResponse(BaseModel):
+    source: str
+    as_of: str
+    count: int
+    stocks: list[StockUniverseItemResponse]
+    warnings: list[str]
+
+
 def _build_news_payload(
     *,
     news_service: NewsAnalysisService,
@@ -195,6 +218,38 @@ async def _build_full_stock_analysis(
         "strategy_ratings": strategy_ratings,
         "disclaimer": DISCLAIMER,
     }
+
+
+@router.get(
+    "/universe",
+    summary="List curated large-cap universe",
+    description=(
+        "Returns ~50 US large-cap names with latest close, prior-session percent change, "
+        "market cap (when available), and volume. Use `GET /stocks/analyze/{ticker}` for deep analysis. "
+        "Data is delayed per Yahoo Finance; symbols are a fixed dashboard set, not live index membership."
+    ),
+    response_model=StockUniverseResponse,
+)
+async def get_stock_universe(
+    universe_service: StockUniverseService = Depends(get_stock_universe_service),
+) -> dict:
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(universe_service.build_snapshot),
+            timeout=settings.stock_universe_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        logger.warning("Stock universe fetch timed out")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Stock universe fetch timed out.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while building stock universe")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected error while loading stock universe.",
+        ) from exc
 
 
 @router.get(

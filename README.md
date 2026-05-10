@@ -44,7 +44,8 @@ Production-ready starter backend for an AI stock analysis platform using FastAPI
 │   │   ├── decision_brief_service.py
 │   │   ├── fundamentals_service.py
 │   │   ├── macro_instability_service.py
-│   │   └── strategy_ratings_service.py
+│   │   ├── strategy_ratings_service.py
+│   │   └── stock_universe_service.py
 │   └── main.py
 ├── .env.example
 ├── Dockerfile
@@ -90,6 +91,9 @@ API will be available at:
 ## Endpoints
 
 - `GET /api/v1/health` — health check
+
+- `GET /api/v1/stocks/universe` — ~50 curated US large-cap rows for list/grid UIs (`name`, `ticker`, `price`, prior-session `change_pct`, `market_cap`, `volume`, `currency`, `exchange`). Delayed per Yahoo; fixed symbol set (not live index membership). Pair with detailed analysis below.
+
 - `GET /api/v1/stocks/analysis?ticker=AAPL` — technical snapshot only (Yahoo Finance)
 
 Example response:

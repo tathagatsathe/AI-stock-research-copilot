@@ -12,6 +12,7 @@ from app.services.stock_analysis_service import (
     StockAnalysisService,
     get_stock_analysis_service,
 )
+from app.services.stock_universe_service import get_stock_universe_service
 
 
 class StubSuccessService(StockAnalysisService):
@@ -396,3 +397,40 @@ def test_stocks_analyze_with_news_uses_fallback_when_news_fails(monkeypatch: pyt
 def test_stocks_analyze_with_news_ticker_too_long_returns_422() -> None:
     response = TestClient(app).get("/api/v1/stocks/analyze/" + ("A" * 11))
     assert response.status_code == 422
+
+
+class StubUniverseService:
+    def build_snapshot(self) -> dict:
+        return {
+            "source": "yfinance",
+            "as_of": "2026-05-10T12:00:00+00:00",
+            "count": 1,
+            "stocks": [
+                {
+                    "ticker": "AAPL",
+                    "name": "Apple Inc.",
+                    "price": 197.12,
+                    "change_pct": 0.42,
+                    "market_cap": 3e12,
+                    "volume": 50_000_000,
+                    "currency": "USD",
+                    "exchange": "NMS",
+                }
+            ],
+            "warnings": [],
+        }
+
+
+def test_stock_universe_endpoint_returns_summary_rows() -> None:
+    app.dependency_overrides[get_stock_universe_service] = lambda: StubUniverseService()
+    try:
+        response = TestClient(app).get("/api/v1/stocks/universe")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 1
+    assert data["stocks"][0]["ticker"] == "AAPL"
+    assert data["stocks"][0]["price"] == 197.12
+    assert data["stocks"][0]["market_cap"] == 3e12
