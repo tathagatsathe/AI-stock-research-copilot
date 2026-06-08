@@ -7,6 +7,19 @@ import {
 import PriceChart from './PriceChart.jsx';
 import SymbolSearchDropdown from './SymbolSearchDropdown.jsx';
 import { formatDisplayTicker, prepareCustomTicker } from './tickerDisplay.js';
+import ChatPanel from './ChatPanel';
+
+const verdictStyles = {
+  watch: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30',
+  cautious: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+  elevated_risk: 'bg-red-500/20 text-red-400 border-red-500/30',
+};
+
+const evidenceStyles = {
+  high: 'text-green-400',
+  medium: 'text-yellow-400',
+  low: 'text-red-400',
+};
 
 const tooltips = {
   buffett: "Evaluates durable competitive advantage based on gross margin stability, and calculates intrinsic value using a DCF model.",
@@ -523,13 +536,16 @@ function App() {
                               Custom
                             </span>
                           )}
-                          <span className={`text-sm px-3 py-1 rounded-full font-bold uppercase tracking-wider ${
-                            analysis.decision_brief.verdict === 'buy' || analysis.decision_brief.verdict === 'strong_buy' ? 'bg-green-500/20 text-green-400 border border-green-500/30' :
-                            analysis.decision_brief.verdict === 'sell' || analysis.decision_brief.verdict === 'strong_sell' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
-                            'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                          <span className={`text-sm px-3 py-1 rounded-full font-bold uppercase tracking-wider border ${
+                            verdictStyles[analysis.decision_brief.verdict] || verdictStyles.cautious
                           }`}>
-                            {analysis.decision_brief.verdict.replace('_', ' ')}
+                            {analysis.decision_brief.verdict.replace(/_/g, ' ')}
                           </span>
+                          {analysis.agent_signal && (
+                            <span className="text-xs px-2 py-1 rounded-full bg-neutral-700/60 text-neutral-300 border border-neutral-600 uppercase">
+                              Agent: {analysis.agent_signal.signal}
+                            </span>
+                          )}
                         </h2>
                         {analysis.name &&
                           analysis.name.toUpperCase() !==
@@ -558,6 +574,9 @@ function App() {
                   <motion.div variants={itemVariants} className="bg-neutral-800/40 rounded-xl p-6 border border-neutral-700/50">
                     <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
                       <TrendingUp className="w-5 h-5 text-accent-cyan" /> Key Insights
+                      <span className={`ml-auto text-xs font-semibold ${evidenceStyles[analysis.decision_brief.evidence_quality] || 'text-neutral-400'}`}>
+                        Evidence: {analysis.decision_brief.evidence_quality}
+                      </span>
                     </h3>
                     <ul className="space-y-3">
                       {analysis.decision_brief.summary_bullets.map((bullet, index) => (
@@ -567,6 +586,30 @@ function App() {
                         </li>
                       ))}
                     </ul>
+                    {analysis.decision_brief.tensions?.length > 0 && (
+                      <div className="mt-5 pt-4 border-t border-neutral-700/50">
+                        <p className="text-xs uppercase tracking-wider text-neutral-500 mb-2">Tensions</p>
+                        <ul className="space-y-2">
+                          {analysis.decision_brief.tensions.map((item, index) => (
+                            <li key={index} className="text-sm text-yellow-200/90">{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {analysis.decision_brief.top_risks?.length > 0 && (
+                      <div className="mt-4">
+                        <p className="text-xs uppercase tracking-wider text-neutral-500 mb-2">Top Risks</p>
+                        <ul className="space-y-2">
+                          {analysis.decision_brief.top_risks.map((item, index) => (
+                            <li key={index} className="text-sm text-red-200/90">{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </motion.div>
+
+                  <motion.div variants={itemVariants}>
+                    <ChatPanel ticker={analysis.ticker} />
                   </motion.div>
 
                   {!isEquityAsset(analysis.asset_class) && (
@@ -789,10 +832,23 @@ function App() {
                       </h3>
                       <div className="flex-1 overflow-y-auto pr-2 space-y-4">
                         {analysis.news_analysis.articles.map((article, index) => (
-                          <div key={index} className="group cursor-pointer">
-                            <p className="font-semibold text-sm text-neutral-200 group-hover:text-accent-cyan transition-colors mb-1">{article.title}</p>
-                            <p className="text-xs text-neutral-400 line-clamp-2">{article.summary}</p>
-                          </div>
+                          article.url ? (
+                            <a
+                              key={index}
+                              href={article.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="group block"
+                            >
+                              <p className="font-semibold text-sm text-neutral-200 group-hover:text-accent-cyan transition-colors mb-1">{article.title}</p>
+                              <p className="text-xs text-neutral-400 line-clamp-2">{article.summary}</p>
+                            </a>
+                          ) : (
+                            <div key={index} className="group">
+                              <p className="font-semibold text-sm text-neutral-200 mb-1">{article.title}</p>
+                              <p className="text-xs text-neutral-400 line-clamp-2">{article.summary}</p>
+                            </div>
+                          )
                         ))}
                       </div>
                     </motion.div>
