@@ -1,20 +1,36 @@
 """
 Retail-facing decision brief: merges technical + news signals into a short verdict.
 
-Implements the Product MVP ask for a one-screen interpretation layer (rule-based v1;
-swap internals for an LLM later without changing API shapes).
+Rule-based v1 with optional Ollama synthesis behind LLM_SYNTHESIS_ENABLED.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Final, Literal
+from typing import Any, Final, Literal
+
+from app.core.config import get_settings
+from app.services.ollama_client import OllamaError, get_ollama_client
+from app.services.structured_output import parse_decision_brief_payload
+
+logger = logging.getLogger(__name__)
 
 from app.services.asset_registry import AssetClass, is_equity_asset
 
 DecisionVerdict = Literal["watch", "cautious", "elevated_risk"]
 EvidenceQuality = Literal["high", "medium", "low"]
+
+_DECISION_BRIEF_SYSTEM = (
+    "You are a financial research assistant. Synthesize evidence into a cautious, "
+    "non-advisory decision brief. Never predict exact future prices. "
+    "Return JSON only with keys: verdict, summary_bullets, top_risks, tensions, "
+    "evidence_quality, news_coverage_note. "
+    "verdict must be one of: watch, cautious, elevated_risk. "
+    "evidence_quality must be one of: high, medium, low."
+)
 
 
 class DecisionBriefService:
@@ -30,7 +46,52 @@ class DecisionBriefService:
         stock: dict,
         news: dict,
         asset_class: AssetClass | None = None,
+        context: dict[str, Any] | None = None,
     ) -> dict:
+        rule_based = self._build_rule_based(stock=stock, news=news, asset_class=asset_class)
+        if not get_settings().llm_synthesis_enabled:
+            rule_based["synthesis_source"] = "rules"
+            return rule_based
+
+        try:
+            llm_payload = self._build_with_llm(
+                stock=stock,
+                news=news,
+                context=context or {},
+                fallback_note=rule_based["news_coverage_note"],
+            )
+            return llm_payload
+        except OllamaError as exc:
+            logger.warning("LLM synthesis failed, using rule-based brief: %s", exc)
+            rule_based["synthesis_source"] = "rules"
+            rule_based["news_coverage_note"] = (
+                f"{rule_based['news_coverage_note']} LLM synthesis unavailable; using rules."
+            )
+            return rule_based
+
+    def _build_with_llm(
+        self,
+        *,
+        stock: dict,
+        news: dict,
+        context: dict[str, Any],
+        fallback_note: str,
+    ) -> dict:
+        prompt = json.dumps(
+            {
+                "stock": stock,
+                "news": news,
+                "macro": context.get("macro"),
+                "fundamentals_coverage": (context.get("fundamentals") or {}).get("coverage"),
+                "strategy_signal": (context.get("strategy_frameworks") or {}).get("garp", {}).get("signal"),
+                "retrieved_chunks": context.get("retrieved_chunks") or [],
+            },
+            default=str,
+        )
+        raw = get_ollama_client().generate_json(prompt=prompt, system=_DECISION_BRIEF_SYSTEM)
+        return parse_decision_brief_payload(raw, fallback_note=fallback_note)
+
+    def _build_rule_based(self, *, stock: dict, news: dict, asset_class: AssetClass | None = None) -> dict:
         ticker = str(stock.get("ticker", "")).strip().upper()
         price = float(stock["current_price"])
         sma = float(stock["sma_50"])

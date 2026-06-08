@@ -36,6 +36,7 @@ def test_watch_when_aligned_bullish_and_uptrend() -> None:
     )
     assert out["verdict"] == "watch"
     assert out["evidence_quality"] in {"high", "medium", "low"}
+    assert out.get("synthesis_source") == "rules"
 
 
 def test_elevated_risk_on_keyword() -> None:
