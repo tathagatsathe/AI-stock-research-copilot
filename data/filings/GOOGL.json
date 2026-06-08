@@ -1,0 +1,11 @@
+{
+  "ticker": "GOOGL",
+  "sections": [
+    {
+      "name": "risk_factors",
+      "source": "sec_10k_excerpt",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001652044",
+      "text": "Alphabet depends heavily on advertising revenue tied to search and YouTube. Privacy changes, ad blockers, and platform policy shifts can reduce monetization. AI competition and regulatory actions on search distribution and data usage remain key risks."
+    }
+  ]
+}
