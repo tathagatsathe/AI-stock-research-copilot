@@ -1,10 +1,11 @@
 import logging
-import re
 from functools import lru_cache
-from typing import Final
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
+
+from app.services.asset_registry import InvalidSymbolError, normalize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +23,11 @@ class DataFetchError(StockAnalysisError):
 
 
 class StockAnalysisService:
-    _TICKER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
-
     def normalize_ticker(self, ticker: str) -> str:
-        normalized_ticker = ticker.strip().upper()
-        if not normalized_ticker:
-            raise InvalidTickerError("Ticker symbol cannot be empty.")
-        if not self._TICKER_PATTERN.fullmatch(normalized_ticker):
-            raise InvalidTickerError(
-                "Ticker symbol must start with a letter and contain only letters, digits, '.', or '-'."
-            )
-        return normalized_ticker
+        try:
+            return normalize_symbol(ticker)
+        except InvalidSymbolError as exc:
+            raise InvalidTickerError(str(exc)) from exc
 
     def analyze_stock(self, ticker: str) -> dict:
         normalized_ticker = self.normalize_ticker(ticker)
@@ -105,6 +100,23 @@ class StockAnalysisService:
         rs = latest_avg_gain / latest_avg_loss
         rsi = 100 - (100 / (1 + rs))
         return float(round(rsi, 2))
+
+    @staticmethod
+    def price_history_from_dataframe(history: pd.DataFrame) -> list[dict[str, Any]]:
+        if history.empty or "Close" not in history:
+            return []
+
+        points: list[dict[str, Any]] = []
+        for idx, row in history.iterrows():
+            close = row.get("Close")
+            if close is None or pd.isna(close):
+                continue
+            if hasattr(idx, "strftime"):
+                date_str = idx.strftime("%Y-%m-%d")
+            else:
+                date_str = str(idx)[:10]
+            points.append({"date": date_str, "close": float(round(float(close), 4))})
+        return points
 
 
 @lru_cache

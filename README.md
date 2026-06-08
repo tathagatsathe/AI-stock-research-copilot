@@ -1,7 +1,7 @@
 # AI Stock Analysis & Research Copilot
 
 <p align="center">
-  <img src="Demo-UI.gif" alt="AI Stock Research Copilot Demo" width="800">
+  <img src="Demo-UI.png" alt="NexusAI multi-market research dashboard" width="800">
 </p>
 
 Production-ready AI stock analysis platform featuring a premium dashboard and a modular, LangGraph-ready backend.
@@ -13,10 +13,11 @@ Production-ready AI stock analysis platform featuring a premium dashboard and a 
 - Modular folder structure (`api`, `services`, `agents`, `core`)
 - Environment-based configuration via `.env`
 - Health check endpoint
-- Stock technicals (price, 50-day SMA, RSI, optional 20-trading-day return) via Yahoo Finance
-- Headline sentiment / keyword risk scan via Google News RSS (keyword heuristic; not deep NLP)
-- Fundamentals snapshot from Yahoo Finance (`info` plus latest reported statements when available)
-- Macro backdrop via CBOE VIX (^VIX): spot level, short drift, and a 1–10 “risk climate” score
+- Multi-market dashboard: US stocks, Indian NSE equities (`.NS`), global indices (`^NSEI`, `^GSPC`, …), forex (`USDINR=X`), crypto (`BTC-USD`), and commodities (`GC=F`)
+- Stock technicals (price, 50-day SMA, RSI, optional 20-trading-day return) via Yahoo Finance for all asset classes
+- Headline sentiment / keyword risk scan via Google News RSS with market-aware queries and locales
+- Fundamentals snapshot from Yahoo Finance for US and India equities (`info` plus latest reported statements when available)
+- Macro backdrop via regional volatility indices (US `^VIX`, India `^INDIAVIX`): spot level, short drift, and a 1–10 “risk climate” score
 - Deterministic 1–10 scores for preset strategies: Value, Growth, Momentum, Dividend, Quality (research-assistance only)
 - Service and agent abstraction layer for AI workflows
 - LangGraph dependency included and orchestrator scaffolded
@@ -24,7 +25,8 @@ Production-ready AI stock analysis platform featuring a premium dashboard and a 
 
 ### Limitations
 
-- Data is sourced from **free/public Yahoo endpoints** and RSS feeds; coverage gaps, delays, and occasional malformed quotes happen—API responses include `coverage` / `warnings` fields where relevant.
+- Data is sourced from **free/public Yahoo endpoints** and RSS feeds; coverage gaps, delays, and occasional malformed quotes happen—API responses include `coverage` / `warnings` fields where relevant. Indian small-caps and some commodity contracts may have thinner Yahoo coverage.
+- Non-equity assets (indices, forex, crypto, commodities) receive **technicals, news, and macro only**—equity fundamentals and Buffett/GARP strategy frameworks are intentionally skipped.
 - Strategy scores and the decision brief are **rule-based heuristics**, not investment advice, forecasts, or suitability judgments (see `disclaimer` on full analysis responses).
 
 ## Project Structure
@@ -56,7 +58,7 @@ Production-ready AI stock analysis platform featuring a premium dashboard and a 
 │   ├── src
 │   └── ...
 ├── .env.example
-├── Demo-UI.gif
+├── Demo-UI.png
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -101,7 +103,7 @@ API will be available at:
 
 - `GET /api/v1/health` — health check
 
-- `GET /api/v1/stocks/universe` — ~50 curated US large-cap rows for list/grid UIs (`name`, `ticker`, `price`, prior-session `change_pct`, `market_cap`, `volume`, `currency`, `exchange`). Delayed per Yahoo; fixed symbol set (not live index membership). Pair with detailed analysis below.
+- `GET /api/v1/stocks/universe?market=us_stocks` — curated rows per market tab (`us_stocks`, `india_stocks`, `global_indices`, `forex`, `crypto`, `commodities`). Each row includes `name`, `ticker`, `price`, prior-session `change_pct`, `market_cap`, `volume`, `currency`, `exchange`, `asset_class`, and `market`. Delayed per Yahoo; fixed symbol sets (not live index membership).
 
 - `GET /api/v1/stocks/analysis?ticker=AAPL` — technical snapshot only (Yahoo Finance)
 
@@ -117,12 +119,13 @@ Example response:
 }
 ```
 
-- `GET /api/v1/stocks/analyze/{ticker}` — full payload: technicals, Google News RSS signals, fundamentals snapshot, VIX-based macro context, preset strategy scores (1–10), and a short rule-based decision brief.
+- `GET /api/v1/stocks/analyze/{ticker}` — full payload: technicals, Google News RSS signals, regional macro context, and equity fundamentals/strategy scores when the symbol is a US or India stock. Non-equity symbols (e.g. `BTC-USD`, `^NSEI`, `USDINR=X`) return technicals, news, and macro only.
 
 The full response always includes a top-level `disclaimer` string. Other notable sections:
 
 - `fundamentals` — `coverage` (`high` / `partial` / `low`), `warnings`, and normalized numeric `fields`
-- `macro` — `vix_level`, `vix_change_5d_pct`, `volatility_regime`, `instability_score_1_10`
+- `macro` — `region`, `symbol`, `vix_level`, `vix_change_5d_pct`, `volatility_regime`, `instability_score_1_10`
+- `asset_class` — `us_equity`, `india_equity`, `global_index`, `forex`, `crypto`, or `commodity`
 - `strategy_ratings` — entries for `value`, `growth`, `momentum`, `dividend`, and `quality`, each with `score_1_10`, `confidence`, `drivers`, `headwinds`, and `score_label`
 
 ## Docker

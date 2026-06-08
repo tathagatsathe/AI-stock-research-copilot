@@ -1,7 +1,7 @@
 """
-Curated equity universe snapshot for list/grid UIs (Yahoo Finance via yfinance).
+Curated market universe snapshots for list/grid UIs (Yahoo Finance via yfinance).
 
-Symbols are a fixed US large-cap set (~50) — not a live index membership feed.
+Symbols are fixed curated sets per market tab — not live index membership feeds.
 """
 
 from __future__ import annotations
@@ -15,63 +15,23 @@ from typing import Any, Final
 
 import yfinance as yf
 
+from app.services.asset_registry import (
+    DEFAULT_MARKET,
+    MARKET_UNIVERSES,
+    classify_asset,
+    display_exchange,
+    display_ticker,
+    market_for_asset_class,
+    resolve_display_name,
+    resolve_market,
+)
+
 logger = logging.getLogger(__name__)
 
 SOURCE: Final[str] = "yfinance"
 
-# ~50 liquid US names for a compact dashboard; expand later if needed.
-UNIVERSE_TICKERS: Final[tuple[str, ...]] = (
-    "AAPL",
-    "MSFT",
-    "GOOGL",
-    "AMZN",
-    "NVDA",
-    "META",
-    "TSLA",
-    "BRK-B",
-    "UNH",
-    "JNJ",
-    "JPM",
-    "V",
-    "PG",
-    "XOM",
-    "MA",
-    "HD",
-    "CVX",
-    "MRK",
-    "ABBV",
-    "BAC",
-    "COST",
-    "AVGO",
-    "KO",
-    "PEP",
-    "TMO",
-    "WMT",
-    "MCD",
-    "CSCO",
-    "DIS",
-    "WFC",
-    "C",
-    "ORCL",
-    "ACN",
-    "DHR",
-    "VZ",
-    "ADBE",
-    "PM",
-    "NKE",
-    "TXN",
-    "NEE",
-    "CRM",
-    "QCOM",
-    "LLY",
-    "AMGN",
-    "HON",
-    "LOW",
-    "INTU",
-    "IBM",
-    "AMAT",
-    "GE",
-)
+# Backward-compatible alias for tests and imports.
+UNIVERSE_TICKERS: Final[tuple[str, ...]] = MARKET_UNIVERSES[DEFAULT_MARKET]
 
 _MAX_WORKERS: Final[int] = 12
 
@@ -98,12 +58,16 @@ def _mapping_get(mapping: Any, key: str) -> Any:
 
 
 class StockUniverseService:
-    def build_snapshot(self) -> dict[str, Any]:
+    def build_snapshot(self, market: str | None = None) -> dict[str, Any]:
+        market_key = resolve_market(market)
+        tickers = MARKET_UNIVERSES[market_key]
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
 
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-            futures = {pool.submit(self._fetch_one, sym): sym for sym in UNIVERSE_TICKERS}
+            futures = {
+                pool.submit(self._fetch_one, sym, market_key): sym for sym in tickers
+            }
             for fut in as_completed(futures):
                 sym = futures[fut]
                 try:
@@ -125,6 +89,7 @@ class StockUniverseService:
 
         return {
             "source": SOURCE,
+            "market": market_key,
             "as_of": datetime.now(timezone.utc).isoformat(),
             "count": len(rows),
             "stocks": rows,
@@ -132,7 +97,7 @@ class StockUniverseService:
         }
 
     @staticmethod
-    def _fetch_one(symbol: str) -> dict[str, Any] | None:
+    def _fetch_one(symbol: str, market: str) -> dict[str, Any] | None:
         t = yf.Ticker(symbol)
         hist = t.history(period="10d", interval="1d", auto_adjust=False)
 
@@ -158,7 +123,7 @@ class StockUniverseService:
             if not vol_series.empty:
                 volume = int(vol_series.iloc[-1])
 
-        name = symbol
+        yahoo_name: str | None = None
         market_cap: float | None = None
         currency = "USD"
         exchange_str: str | None = None
@@ -169,9 +134,9 @@ class StockUniverseService:
             fi = None
 
         if fi is not None:
-            raw_name = _mapping_get(fi, "shortName") or _mapping_get(fi, "longName")
+            raw_name = _mapping_get(fi, "longName") or _mapping_get(fi, "shortName")
             if isinstance(raw_name, str) and raw_name.strip():
-                name = raw_name.strip()
+                yahoo_name = raw_name.strip()
 
             market_cap = _safe_float(_mapping_get(fi, "market_cap"))
 
@@ -183,15 +148,21 @@ class StockUniverseService:
             if isinstance(raw_exchange, str) and raw_exchange.strip():
                 exchange_str = raw_exchange.strip()
 
+        asset_class = classify_asset(symbol)
+        name = resolve_display_name(symbol, yahoo_name)
+
         return {
             "ticker": symbol.upper(),
+            "display_ticker": display_ticker(symbol),
             "name": name,
             "price": price,
             "change_pct": change_pct,
             "market_cap": market_cap,
             "volume": volume,
             "currency": currency,
-            "exchange": exchange_str,
+            "exchange": display_exchange(exchange_str),
+            "asset_class": asset_class.value,
+            "market": market_for_asset_class(asset_class),
         }
 
 

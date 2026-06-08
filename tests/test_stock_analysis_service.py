@@ -39,6 +39,21 @@ def test_analyze_stock_requires_enough_data_for_sma(
         service.analyze_stock("AAPL")
 
 
+def test_price_history_from_dataframe_serializes_daily_closes(
+    service: StockAnalysisService,
+) -> None:
+    history = pd.DataFrame(
+        {"Close": [100.0, 101.5, 99.25]},
+        index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+    )
+    points = service.price_history_from_dataframe(history)
+    assert points == [
+        {"date": "2026-01-01", "close": 100.0},
+        {"date": "2026-01-02", "close": 101.5},
+        {"date": "2026-01-03", "close": 99.25},
+    ]
+
+
 def test_rsi_returns_50_for_flat_prices(service: StockAnalysisService) -> None:
     close_series = pd.Series([100.0] * 20)
     rsi = service._calculate_rsi(close_series, period=14)
@@ -189,7 +204,7 @@ def test_analyze_stock_accepts_supported_ticker_characters(
     assert payload["ticker"] == ticker
 
 
-def test_analyze_stock_accepts_maximum_ticker_length_of_ten(
+def test_analyze_stock_accepts_longer_multi_market_symbols(
     service: StockAnalysisService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class DummyTicker:
@@ -198,8 +213,17 @@ def test_analyze_stock_accepts_maximum_ticker_length_of_ten(
             return _history_from_closes(closes)
 
     monkeypatch.setattr("app.services.stock_analysis_service.yf.Ticker", lambda _: DummyTicker())
-    payload = service.analyze_stock("ABCDEFGHIJ")
-    assert payload["ticker"] == "ABCDEFGHIJ"
+
+    for symbol in ("HDFCBANK.NS", "^NSEI", "BTC-USD", "USDINR=X"):
+        payload = service.analyze_stock(symbol)
+        assert payload["ticker"] == symbol
+
+
+def test_analyze_stock_rejects_symbols_over_twenty_chars(
+    service: StockAnalysisService,
+) -> None:
+    with pytest.raises(InvalidTickerError):
+        service.analyze_stock("A" * 21)
 
 
 def test_calculate_rsi_returns_bounded_two_decimal_output_for_mixed_trend(

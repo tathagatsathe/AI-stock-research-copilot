@@ -319,6 +319,30 @@ def test_risk_keyword_detection_is_case_insensitive_and_deduplicated_in_payload(
     assert sorted(payload["risk_keywords_detected"]) == ["fraud", "investigation", "lawsuit"]
 
 
+def test_build_news_query_uses_india_locale_for_nse_stocks() -> None:
+    service = NewsAnalysisService()
+    query_text, locale_key = service._build_news_query(
+        "RELIANCE.NS",
+        asset_class=__import__("app.services.asset_registry", fromlist=["AssetClass"]).AssetClass.INDIA_EQUITY,
+        display_name="Reliance Industries",
+    )
+    assert "NSE stock" in query_text
+    assert locale_key == "india"
+
+
+def test_build_news_query_uses_crypto_template() -> None:
+    from app.services.asset_registry import AssetClass
+
+    service = NewsAnalysisService()
+    query_text, locale_key = service._build_news_query(
+        "BTC-USD",
+        asset_class=AssetClass.CRYPTO,
+        display_name="Bitcoin USD",
+    )
+    assert "cryptocurrency" in query_text
+    assert locale_key == "global"
+
+
 def test_build_fallback_payload_shape() -> None:
     service = NewsAnalysisService()
     payload = service.build_fallback_payload("simulated error")

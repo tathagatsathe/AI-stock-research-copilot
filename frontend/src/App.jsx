@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   TrendingUp, Activity, Newspaper, ShieldAlert, 
   DollarSign, BarChart2, Search, Target, Zap, Info
 } from 'lucide-react';
+import PriceChart from './PriceChart.jsx';
+import SymbolSearchDropdown from './SymbolSearchDropdown.jsx';
+import { formatDisplayTicker, prepareCustomTicker } from './tickerDisplay.js';
 
 const tooltips = {
   buffett: "Evaluates durable competitive advantage based on gross margin stability, and calculates intrinsic value using a DCF model.",
@@ -21,6 +24,18 @@ const tooltips = {
   ebitda: "Earnings before interest, taxes, depreciation, and amortization.",
   default: "Financial metric utilized in the fundamental analysis."
 };
+
+const MARKET_TABS = [
+  { id: 'us_stocks', label: 'US' },
+  { id: 'india_stocks', label: 'India' },
+  { id: 'global_indices', label: 'Indices' },
+  { id: 'forex', label: 'Forex' },
+  { id: 'crypto', label: 'Crypto' },
+  { id: 'commodities', label: 'Commodities' },
+];
+
+const isEquityAsset = (assetClass) =>
+  assetClass === 'us_equity' || assetClass === 'india_equity';
 
 const fundamentalCategories = [
   { name: 'Valuation', keys: ['market_cap', 'enterprise_value', 'trailing_pe', 'forward_pe', 'price_to_book'] },
@@ -52,15 +67,22 @@ function App() {
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedMarket, setSelectedMarket] = useState('us_stocks');
+  const [remoteSuggestions, setRemoteSuggestions] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState(0);
+  const searchInputRef = useRef(null);
 
   useEffect(() => {
     const fetchUniverse = async () => {
       setLoadingUniverse(true);
       setError('');
       try {
-        const response = await fetch('/api/stocks/universe');
+        const response = await fetch(`/api/stocks/universe?market=${selectedMarket}`);
         if (!response.ok) {
-          throw new Error('Failed to fetch stock universe.');
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || 'Failed to fetch market universe.');
         }
         const data = await response.json();
         setUniverse(data.stocks || []);
@@ -71,15 +93,18 @@ function App() {
       }
     };
     fetchUniverse();
-  }, []);
+  }, [selectedMarket]);
 
   const handleAnalyze = async (ticker) => {
-    setSelectedStock(ticker);
+    const normalized = ticker.trim().toUpperCase();
+    if (!normalized) return;
+
+    setSelectedStock(normalized);
     setLoadingAnalysis(true);
     setAnalysis(null);
     setError('');
     try {
-      const response = await fetch(`/api/stocks/analyze/${ticker}`);
+      const response = await fetch(`/api/stocks/analyze/${encodeURIComponent(normalized)}`);
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Failed to fetch analysis.');
@@ -93,10 +118,116 @@ function App() {
     }
   };
 
-  const filteredUniverse = universe.filter(s => 
-    s.ticker.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    s.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const trimmedSearch = searchQuery.trim();
+  const preparedCustomTicker = trimmedSearch
+    ? prepareCustomTicker(trimmedSearch, selectedMarket)
+    : '';
+
+  const isInUniverse = (ticker) =>
+    universe.some((s) => s.ticker.toUpperCase() === ticker.toUpperCase());
+
+  const hasExactUniverseMatch =
+    !!trimmedSearch &&
+    universe.some(
+      (s) =>
+        s.ticker.toLowerCase() === trimmedSearch.toLowerCase() ||
+        s.ticker.toLowerCase() === preparedCustomTicker.toLowerCase() ||
+        (s.display_ticker || '').toLowerCase() === trimmedSearch.toLowerCase()
+    );
+
+  const showCustomSearch = !!trimmedSearch && !hasExactUniverseMatch;
+  const isCustomSelection = !!selectedStock && !isInUniverse(selectedStock);
+
+  const runCustomSearch = () => {
+    if (!preparedCustomTicker) return;
+    handleAnalyze(preparedCustomTicker);
+  };
+
+  const selectSuggestion = (item) => {
+    setSearchQuery(item.display_ticker || item.ticker);
+    setShowDropdown(false);
+    handleAnalyze(item.ticker);
+  };
+
+  const filteredUniverse = universe.filter((s) => {
+    if (!trimmedSearch) return true;
+    const q = trimmedSearch.toLowerCase();
+    return (
+      s.ticker.toLowerCase().includes(q) ||
+      (s.display_ticker || '').toLowerCase().includes(q) ||
+      s.name.toLowerCase().includes(q)
+    );
+  });
+
+  const dropdownSuggestions = useMemo(() => {
+    if (!trimmedSearch) return [];
+
+    const local = filteredUniverse.slice(0, 5).map((s) => ({
+      ticker: s.ticker,
+      display_ticker: s.display_ticker || formatDisplayTicker(s.ticker),
+      name: s.name,
+      exchange: s.exchange,
+      in_universe: true,
+      source: 'local',
+    }));
+
+    const localTickers = new Set(local.map((s) => s.ticker.toUpperCase()));
+    const remote = remoteSuggestions
+      .filter((r) => !localTickers.has(r.ticker.toUpperCase()))
+      .map((r) => ({ ...r, source: 'remote' }));
+
+    return [...local, ...remote].slice(0, 10);
+  }, [trimmedSearch, filteredUniverse, remoteSuggestions]);
+
+  useEffect(() => {
+    setHighlightIndex(0);
+  }, [trimmedSearch, dropdownSuggestions.length]);
+
+  useEffect(() => {
+    if (trimmedSearch.length < 2) {
+      setRemoteSuggestions([]);
+      setSearchLoading(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setSearchLoading(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `/api/stocks/search?q=${encodeURIComponent(trimmedSearch)}&market=${selectedMarket}&limit=8`,
+          { signal: controller.signal }
+        );
+        if (!response.ok) {
+          setRemoteSuggestions([]);
+          return;
+        }
+        const data = await response.json();
+        setRemoteSuggestions(data.results || []);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setRemoteSuggestions([]);
+        }
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [trimmedSearch, selectedMarket]);
+
+  const searchPlaceholderByMarket = {
+    us_stocks: 'Search by name or symbol (e.g. Apple, Palantir)',
+    india_stocks: 'Search by name or symbol (e.g. Reliance, TCS)',
+    global_indices: 'Search by name or symbol (e.g. Nifty, S&P)',
+    forex: 'Search pair (e.g. USD INR, EUR USD)',
+    crypto: 'Search by name or symbol (e.g. Bitcoin, Solana)',
+    commodities: 'Search by name or symbol (e.g. Gold, Oil)',
+  };
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -123,7 +254,7 @@ function App() {
             <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-neutral-400">
               Nexus<span className="text-accent-cyan">AI</span>
             </h1>
-            <p className="text-sm text-neutral-400 font-medium">Quantitative Stock Analysis</p>
+            <p className="text-sm text-neutral-400 font-medium">Multi-Market Research</p>
           </div>
         </header>
         
@@ -136,24 +267,110 @@ function App() {
             className="w-full md:w-80 glass-panel flex flex-col overflow-hidden shrink-0"
           >
             <div className="p-5 border-b border-glass-border">
-              <h2 className="text-lg font-semibold flex items-center gap-2 mb-4 text-white">
+              <h2 className="text-lg font-semibold flex items-center gap-2 mb-3 text-white">
                 <Target className="w-5 h-5 text-accent-cyan" /> Market Universe
               </h2>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -tranneutral-y-1/2 w-4 h-4 text-neutral-400" />
-                <input 
-                  type="text" 
-                  placeholder="Search or enter custom ticker..." 
-                  className="w-full bg-neutral-800/50 border border-neutral-700 rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-cyan focus:border-transparent transition-all"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && searchQuery.trim() !== '') {
-                      handleAnalyze(searchQuery.trim().toUpperCase());
-                    }
-                  }}
-                />
+              <div className="flex flex-wrap gap-1.5 mb-4">
+                {MARKET_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedMarket(tab.id);
+                      setSearchQuery('');
+                      setRemoteSuggestions([]);
+                      setShowDropdown(false);
+                    }}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all ${
+                      selectedMarket === tab.id
+                        ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/40'
+                        : 'bg-neutral-800/50 text-neutral-400 border border-neutral-700 hover:border-neutral-500'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    placeholder={searchPlaceholderByMarket[selectedMarket]}
+                    className="w-full bg-neutral-800/50 border border-neutral-700 rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-cyan focus:border-transparent transition-all"
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      setShowDropdown(true);
+                    }}
+                    onFocus={() => setShowDropdown(true)}
+                    onBlur={() => {
+                      window.setTimeout(() => setShowDropdown(false), 150);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown' && dropdownSuggestions.length > 0) {
+                        e.preventDefault();
+                        setShowDropdown(true);
+                        setHighlightIndex((index) =>
+                          Math.min(index + 1, dropdownSuggestions.length - 1)
+                        );
+                        return;
+                      }
+                      if (e.key === 'ArrowUp' && dropdownSuggestions.length > 0) {
+                        e.preventDefault();
+                        setShowDropdown(true);
+                        setHighlightIndex((index) => Math.max(index - 1, 0));
+                        return;
+                      }
+                      if (e.key === 'Escape') {
+                        setShowDropdown(false);
+                        return;
+                      }
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (showDropdown && dropdownSuggestions[highlightIndex]) {
+                          selectSuggestion(dropdownSuggestions[highlightIndex]);
+                          return;
+                        }
+                        if (showCustomSearch) {
+                          runCustomSearch();
+                        } else if (filteredUniverse.length === 1) {
+                          handleAnalyze(filteredUniverse[0].ticker);
+                        } else if (hasExactUniverseMatch) {
+                          const match = universe.find(
+                            (s) =>
+                              s.ticker.toLowerCase() === trimmedSearch.toLowerCase() ||
+                              (s.display_ticker || '').toLowerCase() === trimmedSearch.toLowerCase()
+                          );
+                          if (match) handleAnalyze(match.ticker);
+                        }
+                      }
+                    }}
+                  />
+                  {showDropdown && trimmedSearch && (searchLoading || dropdownSuggestions.length > 0) && (
+                    <SymbolSearchDropdown
+                      suggestions={dropdownSuggestions}
+                      loading={searchLoading}
+                      highlightIndex={highlightIndex}
+                      onSelect={selectSuggestion}
+                      onHighlight={setHighlightIndex}
+                    />
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={runCustomSearch}
+                  disabled={!showCustomSearch || loadingAnalysis}
+                  className="shrink-0 px-3 py-2 text-xs font-semibold rounded-lg bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/40 hover:bg-accent-cyan/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  title="Analyze symbol not in curated list"
+                >
+                  Analyze
+                </button>
+              </div>
+              <p className="text-[10px] text-neutral-500 mt-2 leading-relaxed">
+                Pick a suggestion from the dropdown — company names work too.
+              </p>
             </div>
             
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -165,7 +382,25 @@ function App() {
               {error && !loadingUniverse && <p className="text-red-400 text-sm p-2 text-center bg-red-400/10 rounded">{error}</p>}
               
               <AnimatePresence>
-                {searchQuery.trim() !== '' && !universe.some(s => s.ticker.toLowerCase() === searchQuery.trim().toLowerCase()) && (
+                {isCustomSelection && (
+                  <motion.div
+                    key="active-custom"
+                    layout
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="w-full p-3 rounded-xl border bg-gradient-to-r from-accent-cyan/20 to-transparent border-accent-cyan/50 shadow-[inset_4px_0_0_0_#22d3ee]"
+                  >
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-white text-lg tracking-tight">
+                        {formatDisplayTicker(selectedStock)}
+                      </span>
+                      <Activity className="w-4 h-4 text-accent-cyan animate-pulse" />
+                    </div>
+                    <span className="text-xs text-accent-cyan block mt-0.5">Custom symbol · full analysis</span>
+                  </motion.div>
+                )}
+                {showCustomSearch && dropdownSuggestions.length === 0 && !searchLoading && (
                   <motion.button
                     key="custom-ticker"
                     layout
@@ -174,15 +409,28 @@ function App() {
                     exit={{ opacity: 0, scale: 0.95 }}
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
-                    onClick={() => handleAnalyze(searchQuery.trim().toUpperCase())}
-                    className="w-full text-left p-3 rounded-xl transition-all border bg-neutral-800/30 border-dashed border-neutral-500 hover:bg-neutral-800/50 hover:border-accent-cyan"
+                    onClick={runCustomSearch}
+                    disabled={loadingAnalysis}
+                    className="w-full text-left p-3 rounded-xl transition-all border bg-neutral-800/30 border-dashed border-accent-cyan/50 hover:bg-neutral-800/50 hover:border-accent-cyan disabled:opacity-60"
                   >
                     <div className="flex justify-between items-center">
-                      <span className="font-bold text-accent-cyan text-lg tracking-tight">Analyze "{searchQuery.trim().toUpperCase()}"</span>
+                      <span className="font-bold text-accent-cyan text-lg tracking-tight">
+                        {formatDisplayTicker(preparedCustomTicker)}
+                      </span>
                       <Search className="w-4 h-4 text-accent-cyan" />
                     </div>
-                    <span className="text-xs text-neutral-400 block mt-0.5">Custom Ticker Search (Press Enter)</span>
+                    <span className="text-xs text-neutral-400 block mt-0.5">
+                      Not in this universe — analyze on Yahoo Finance
+                      {preparedCustomTicker !== trimmedSearch.toUpperCase() && (
+                        <span className="text-neutral-500"> · resolves to {preparedCustomTicker}</span>
+                      )}
+                    </span>
                   </motion.button>
+                )}
+                {trimmedSearch && filteredUniverse.length === 0 && !showCustomSearch && (
+                  <p className="text-xs text-neutral-500 text-center py-4 px-2">
+                    No curated matches for &ldquo;{trimmedSearch}&rdquo;.
+                  </p>
                 )}
                 {filteredUniverse.map((stock) => (
                   <motion.button
@@ -201,10 +449,21 @@ function App() {
                     }`}
                   >
                     <div className="flex justify-between items-center">
-                      <span className="font-bold text-white text-lg tracking-tight">{stock.ticker}</span>
+                      <span className="font-bold text-white text-lg tracking-tight">
+                        {stock.display_ticker || formatDisplayTicker(stock.ticker)}
+                      </span>
                       {selectedStock === stock.ticker && <Activity className="w-4 h-4 text-accent-cyan animate-pulse" />}
                     </div>
-                    <span className="text-xs text-neutral-400 truncate block mt-0.5">{stock.name}</span>
+                    {stock.name &&
+                      stock.name.toUpperCase() !==
+                        (stock.display_ticker || formatDisplayTicker(stock.ticker)).toUpperCase() && (
+                      <span className="text-xs text-neutral-400 truncate block mt-0.5">{stock.name}</span>
+                    )}
+                    {(stock.currency || stock.exchange) && (
+                      <span className="text-[10px] text-neutral-500 mt-1 block">
+                        {[stock.exchange, stock.currency].filter(Boolean).join(' · ')}
+                      </span>
+                    )}
                   </motion.button>
                 ))}
               </AnimatePresence>
@@ -218,9 +477,18 @@ function App() {
             className="flex-1 glass-panel overflow-hidden flex flex-col"
           >
             {loadingAnalysis ? (
-              <div className="flex-1 flex flex-col items-center justify-center">
-                <div className="w-12 h-12 border-4 border-accent-purple border-t-transparent rounded-full animate-spin mb-4"></div>
-                <p className="text-neutral-400 font-medium animate-pulse">Running quantitative models...</p>
+              <div className="flex-1 overflow-y-auto p-6 md:p-8">
+                <div className="mb-6">
+                  <h2 className="text-3xl font-black text-white tracking-tight">
+                    {formatDisplayTicker(selectedStock)}
+                  </h2>
+                  <p className="text-neutral-400 text-sm mt-1">Loading analysis...</p>
+                </div>
+                <PriceChart loading />
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="w-10 h-10 border-4 border-accent-purple border-t-transparent rounded-full animate-spin mb-3"></div>
+                  <p className="text-neutral-400 font-medium animate-pulse">Running quantitative models...</p>
+                </div>
               </div>
             ) : error && !loadingAnalysis ? (
               <div className="flex-1 flex items-center justify-center p-8">
@@ -247,16 +515,28 @@ function App() {
                   {/* Header Card */}
                   <motion.div variants={itemVariants} className="flex flex-col md:flex-row justify-between items-start md:items-end pb-6 border-b border-neutral-700/50">
                     <div>
-                      <h2 className="text-4xl font-black text-white tracking-tight mb-2 flex items-center gap-3">
-                        {analysis.ticker}
-                        <span className={`text-sm px-3 py-1 rounded-full font-bold uppercase tracking-wider ${
-                          analysis.decision_brief.verdict === 'buy' || analysis.decision_brief.verdict === 'strong_buy' ? 'bg-green-500/20 text-green-400 border border-green-500/30' :
-                          analysis.decision_brief.verdict === 'sell' || analysis.decision_brief.verdict === 'strong_sell' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
-                          'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-                        }`}>
-                          {analysis.decision_brief.verdict.replace('_', ' ')}
-                        </span>
-                      </h2>
+                      <div className="mb-2">
+                        <h2 className="text-4xl font-black text-white tracking-tight flex items-center gap-3 flex-wrap">
+                          {analysis.display_ticker || formatDisplayTicker(analysis.ticker)}
+                          {isCustomSelection && (
+                            <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-accent-cyan/15 text-accent-cyan border border-accent-cyan/30">
+                              Custom
+                            </span>
+                          )}
+                          <span className={`text-sm px-3 py-1 rounded-full font-bold uppercase tracking-wider ${
+                            analysis.decision_brief.verdict === 'buy' || analysis.decision_brief.verdict === 'strong_buy' ? 'bg-green-500/20 text-green-400 border border-green-500/30' :
+                            analysis.decision_brief.verdict === 'sell' || analysis.decision_brief.verdict === 'strong_sell' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                            'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                          }`}>
+                            {analysis.decision_brief.verdict.replace('_', ' ')}
+                          </span>
+                        </h2>
+                        {analysis.name &&
+                          analysis.name.toUpperCase() !==
+                            (analysis.display_ticker || formatDisplayTicker(analysis.ticker)).toUpperCase() && (
+                          <p className="text-neutral-300 text-lg mt-1">{analysis.name}</p>
+                        )}
+                      </div>
                       <div className="flex items-center gap-6 text-sm">
                         <div className="flex items-center gap-2">
                           <DollarSign className="w-4 h-4 text-neutral-400" />
@@ -268,6 +548,10 @@ function App() {
                         </div>
                       </div>
                     </div>
+                  </motion.div>
+
+                  <motion.div variants={itemVariants}>
+                    <PriceChart data={analysis.price_history} />
                   </motion.div>
 
                   {/* Summary Bullets */}
@@ -285,7 +569,14 @@ function App() {
                     </ul>
                   </motion.div>
 
+                  {!isEquityAsset(analysis.asset_class) && (
+                    <motion.div variants={itemVariants} className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-sm text-yellow-200">
+                      Equity-only analysis (fundamentals and strategy frameworks) is not applicable for this asset class.
+                    </motion.div>
+                  )}
+
                   {/* Strategy Ratings Grid */}
+                  {isEquityAsset(analysis.asset_class) && (
                   <motion.div variants={itemVariants}>
                     <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
                       <BarChart2 className="w-5 h-5 text-accent-purple" /> Strategy Alpha
@@ -315,9 +606,10 @@ function App() {
                       ))}
                     </div>
                   </motion.div>
+                  )}
 
                   {/* Strategy Frameworks */}
-                  {analysis.strategy_frameworks && (
+                  {isEquityAsset(analysis.asset_class) && analysis.strategy_frameworks && !analysis.strategy_frameworks.not_applicable && (
                     <motion.div variants={itemVariants} className="bg-neutral-800/40 rounded-xl p-6 border border-neutral-700/50">
                       <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
                         <Zap className="w-5 h-5 text-accent-purple" /> Strategy Frameworks
@@ -388,7 +680,7 @@ function App() {
                   )}
 
                   {/* Fundamentals */}
-                  {analysis.fundamentals && analysis.fundamentals.fields && (
+                  {isEquityAsset(analysis.asset_class) && analysis.fundamentals && analysis.fundamentals.fields && Object.keys(analysis.fundamentals.fields).length > 0 && (
                     <motion.div variants={itemVariants} className="bg-neutral-800/40 rounded-xl p-6 border border-neutral-700/50">
                       <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
                         <Activity className="w-5 h-5 text-accent-cyan" /> Fundamentals ({analysis.fundamentals.currency})

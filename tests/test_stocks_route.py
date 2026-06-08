@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 
 import pytest
@@ -13,6 +15,7 @@ from app.services.stock_analysis_service import (
     get_stock_analysis_service,
 )
 from app.services.stock_universe_service import get_stock_universe_service
+from app.services.symbol_search_service import get_symbol_search_service
 
 
 class StubSuccessService(StockAnalysisService):
@@ -26,7 +29,17 @@ class StubSuccessService(StockAnalysisService):
         }
 
 
-def _fake_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict, dict]:
+def _fake_price_history() -> list[dict]:
+    return [
+        {"date": f"2026-01-{day:02d}", "close": 100.0 + day * 0.4}
+        for day in range(1, 31)
+    ] + [
+        {"date": f"2026-02-{day:02d}", "close": 112.0 + day * 0.4}
+        for day in range(1, 29)
+    ]
+
+
+def _fake_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict, dict, list]:
     sym = ticker.strip().upper()
     strategy_frameworks = {
         "buffett_quality_dcf": {
@@ -62,12 +75,14 @@ def _fake_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tup
             "fields": {"trailing_pe": 20.0, "dividend_yield": 0.02},
         },
         strategy_frameworks,
+        _fake_price_history(),
     )
 
 
-def _fake_macro_snapshot() -> dict:
+def _fake_macro_snapshot(region: str = "us") -> dict:
     return {
         "source": "yfinance",
+        "region": region,
         "symbol": "^VIX",
         "vix_level": 17.5,
         "vix_change_5d_pct": -2.0,
@@ -78,9 +93,21 @@ def _fake_macro_snapshot() -> dict:
     }
 
 
+_DISPLAY_NAMES = {
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft Corporation",
+    "BTC-USD": "Bitcoin",
+}
+
+
+def _fake_display_name(symbol: str) -> str | None:
+    return _DISPLAY_NAMES.get(symbol.strip().upper())
+
+
 def _patch_analyze_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(stocks_route, "_fetch_equity_bundle", _fake_equity_bundle)
     monkeypatch.setattr(stocks_route, "_macro_snapshot_sync", _fake_macro_snapshot)
+    monkeypatch.setattr(stocks_route, "_resolve_display_name_for_symbol", _fake_display_name)
 
 
 class StubInvalidTickerService(StockAnalysisService):
@@ -119,7 +146,7 @@ class StubNegativePriceService(StockAnalysisService):
 
 
 class StubSuccessNewsService(NewsAnalysisService):
-    def analyze_ticker_news(self, ticker: str) -> dict:
+    def analyze_ticker_news(self, ticker: str, **kwargs) -> dict:
         return {
             "source": "google_news_rss",
             "articles": [
@@ -139,12 +166,12 @@ class StubSuccessNewsService(NewsAnalysisService):
 
 
 class StubFallbackNewsService(NewsAnalysisService):
-    def analyze_ticker_news(self, ticker: str) -> dict:
+    def analyze_ticker_news(self, ticker: str, **kwargs) -> dict:
         return self.build_fallback_payload("Failed to fetch latest news from Google News RSS.")
 
 
 class StubNewsSuccessService(NewsAnalysisService):
-    def analyze_ticker_news(self, ticker: str) -> dict:
+    def analyze_ticker_news(self, ticker: str, **kwargs) -> dict:
         return {
             "source": "google_news_rss",
             "articles": [
@@ -164,7 +191,7 @@ class StubNewsSuccessService(NewsAnalysisService):
 
 
 class StubNewsFailureService(NewsAnalysisService):
-    def analyze_ticker_news(self, ticker: str) -> dict:
+    def analyze_ticker_news(self, ticker: str, **kwargs) -> dict:
         raise RuntimeError("News upstream timeout")
 
     def build_fallback_payload(self, error_message: str) -> dict:
@@ -219,7 +246,7 @@ def test_stocks_analysis_missing_ticker_query_param_returns_422() -> None:
 
 
 def test_stocks_analysis_ticker_too_long_returns_422() -> None:
-    response = TestClient(app).get("/api/v1/stocks/analysis", params={"ticker": "A" * 11})
+    response = TestClient(app).get("/api/v1/stocks/analysis", params={"ticker": "A" * 21})
     assert response.status_code == 422
 
 
@@ -317,6 +344,11 @@ def test_analyze_endpoint_integration_success(monkeypatch: pytest.MonkeyPatch) -
     assert response.status_code == 200
     payload = response.json()
     assert payload["ticker"] == "AAPL"
+    assert payload["name"] == "Apple Inc."
+    assert payload["display_ticker"] == "AAPL"
+    assert len(payload["price_history"]) > 0
+    assert payload["price_history"][0]["date"]
+    assert payload["price_history"][0]["close"] > 0
     assert payload["news_analysis"]["overall_sentiment"] == "bullish"
     assert payload["news_analysis"]["error"] is None
     assert payload["decision_brief"]["verdict"] in {"watch", "cautious", "elevated_risk"}
@@ -373,7 +405,7 @@ def test_analyze_endpoint_invalid_ticker_maps_to_400(monkeypatch: pytest.MonkeyP
 
 
 def test_analyze_endpoint_ticker_too_long_returns_422() -> None:
-    response = TestClient(app).get(f"/api/v1/stocks/analyze/{'A' * 11}")
+    response = TestClient(app).get(f"/api/v1/stocks/analyze/{'A' * 21}")
     assert response.status_code == 422
 
 
@@ -414,30 +446,70 @@ def test_stocks_analyze_with_news_uses_fallback_when_news_fails(monkeypatch: pyt
 
 
 def test_stocks_analyze_with_news_ticker_too_long_returns_422() -> None:
-    response = TestClient(app).get("/api/v1/stocks/analyze/" + ("A" * 11))
+    response = TestClient(app).get("/api/v1/stocks/analyze/" + ("A" * 21))
     assert response.status_code == 422
 
 
 class StubUniverseService:
-    def build_snapshot(self) -> dict:
+    def build_snapshot(self, market: str | None = None) -> dict:
+        market_key = market or "us_stocks"
         return {
             "source": "yfinance",
+            "market": market_key,
             "as_of": "2026-05-10T12:00:00+00:00",
             "count": 1,
             "stocks": [
                 {
                     "ticker": "AAPL",
+                    "display_ticker": "AAPL",
                     "name": "Apple Inc.",
                     "price": 197.12,
                     "change_pct": 0.42,
                     "market_cap": 3e12,
                     "volume": 50_000_000,
                     "currency": "USD",
-                    "exchange": "NMS",
+                    "exchange": "NASDAQ",
+                    "asset_class": "us_equity",
+                    "market": "us_stocks",
                 }
             ],
             "warnings": [],
         }
+
+
+class StubSearchService:
+    def search(self, query: str, market: str | None = None, limit: int = 8) -> dict:
+        return {
+            "query": query,
+            "market": market or "us_stocks",
+            "count": 1,
+            "results": [
+                {
+                    "ticker": "PLTR",
+                    "display_ticker": "PLTR",
+                    "name": "Palantir Technologies Inc.",
+                    "exchange": "NYSE",
+                    "in_universe": False,
+                }
+            ],
+        }
+
+
+def test_stock_search_endpoint_returns_suggestions() -> None:
+    app.dependency_overrides[get_symbol_search_service] = lambda: StubSearchService()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/stocks/search",
+            params={"q": "palantir", "market": "us_stocks"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 1
+    assert data["results"][0]["ticker"] == "PLTR"
+    assert data["results"][0]["name"].startswith("Palantir")
 
 
 def test_stock_universe_endpoint_returns_summary_rows() -> None:
@@ -453,3 +525,57 @@ def test_stock_universe_endpoint_returns_summary_rows() -> None:
     assert data["stocks"][0]["ticker"] == "AAPL"
     assert data["stocks"][0]["price"] == 197.12
     assert data["stocks"][0]["market_cap"] == 3e12
+    assert data["market"] == "us_stocks"
+
+
+def _fake_non_equity_bundle(ticker: str, stock_service: StockAnalysisService) -> tuple[dict, dict, dict, list]:
+    sym = ticker.strip().upper()
+    return (
+        {
+            "ticker": sym,
+            "current_price": 65000.0,
+            "sma_50": 62000.0,
+            "rsi": 58.0,
+            "return_20d_pct": 4.5,
+        },
+        {
+            "ticker": sym,
+            "source": "yfinance",
+            "currency": None,
+            "as_of": None,
+            "coverage": "low",
+            "warnings": ["Fundamentals are not applicable for crypto."],
+            "fields": {},
+        },
+        {"not_applicable": True},
+        _fake_price_history(),
+    )
+
+
+def test_analyze_endpoint_non_equity_returns_stub_fundamentals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stocks_route, "_fetch_equity_bundle", _fake_non_equity_bundle)
+    monkeypatch.setattr(stocks_route, "_macro_snapshot_sync", _fake_macro_snapshot)
+    monkeypatch.setattr(stocks_route, "_resolve_display_name_for_symbol", _fake_display_name)
+
+    app.dependency_overrides[get_stock_analysis_service] = lambda: StubSuccessService()
+    app.dependency_overrides[get_news_analysis_service] = lambda: StubSuccessNewsService()
+    try:
+        response = TestClient(app).get("/api/v1/stocks/analyze/BTC-USD")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["name"] == "Bitcoin"
+    assert payload["display_ticker"] == "BTC"
+    assert payload["asset_class"] == "crypto"
+    assert payload["fundamentals"]["coverage"] == "low"
+    assert payload["strategy_frameworks"]["not_applicable"] is True
+    assert payload["strategy_ratings"]["value"]["score_label"] == "not_applicable"
+
+
+def test_stock_universe_invalid_market_returns_400() -> None:
+    response = TestClient(app).get("/api/v1/stocks/universe", params={"market": "invalid"})
+    assert response.status_code == 400
