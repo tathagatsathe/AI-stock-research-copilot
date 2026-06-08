@@ -4,4 +4,8 @@ pydantic
 pydantic-settings
 langgraph
 yfinance
+pandas
 pytest
+redis
+chromadb
+sentence-transformers
