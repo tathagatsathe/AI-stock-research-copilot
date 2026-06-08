@@ -1,0 +1,11 @@
+{
+  "ticker": "MSFT",
+  "sections": [
+    {
+      "name": "risk_factors",
+      "source": "sec_10k_excerpt",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000789019",
+      "text": "Microsoft faces significant competition in cloud computing, productivity software, gaming, and AI platforms. Cybersecurity incidents, outages, or defects in cloud services could harm reputation and revenue. Evolving AI regulation and intellectual property disputes may increase compliance costs."
+    }
+  ]
+}

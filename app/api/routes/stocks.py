@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import Any, Dict, Literal, Optional
+from typing import Any, AsyncIterator, Dict, Literal, Optional
 
 import yfinance as yf
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.agents.workflow import get_workflow_orchestrator
 from app.core.config import get_settings
 from app.services.asset_registry import (
     AssetClass,
@@ -19,7 +22,9 @@ from app.services.asset_registry import (
     macro_region_for_asset,
     resolve_display_name,
 )
+from app.services.cache_service import get_cache_service
 from app.services.decision_brief_service import get_decision_brief_service
+from app.services.rag_service import get_rag_service
 from app.services.fundamentals_service import get_fundamentals_service
 from app.services.macro_instability_service import get_macro_instability_service
 from app.services.news_analysis_service import (
@@ -65,6 +70,7 @@ class NewsArticleResponse(BaseModel):
     summary: str = Field(..., min_length=1)
     sentiment: Literal["bullish", "bearish", "neutral"]
     risk_keywords: list[str]
+    url: str = ""
 
 
 class NewsAnalysisResponse(BaseModel):
@@ -83,6 +89,40 @@ class DecisionBriefResponse(BaseModel):
     evidence_quality: Literal["high", "medium", "low"]
     synthesized_at: str
     news_coverage_note: str
+    synthesis_source: Literal["llm", "rules"] = "rules"
+
+
+class AgentTraceEntry(BaseModel):
+    node: str
+    message: str
+
+
+class AgentSignalResponse(BaseModel):
+    ticker: str
+    signal: Literal["buy", "hold", "sell"]
+    confidence: float = Field(..., ge=0, le=1)
+    notes: list[str]
+    langgraph_enabled: bool
+    trace: list[AgentTraceEntry] = []
+
+
+class AskCitationResponse(BaseModel):
+    source: str
+    excerpt: str
+    url: str = ""
+
+
+class AskRequest(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=10)
+    question: str = Field(..., min_length=3, max_length=500)
+
+
+class AskResponse(BaseModel):
+    ticker: str
+    question: str
+    answer: str
+    citations: list[AskCitationResponse]
+    retrieval_confidence: Literal["high", "medium", "low"]
 
 
 class FundamentalsSnapshotResponse(BaseModel):
@@ -146,6 +186,7 @@ class FullStockAnalysisResponse(StockAnalysisResponse):
     macro: MacroContextResponse
     strategy_ratings: StrategyRatingsResponse
     strategy_frameworks: Dict[str, Any]
+    agent_signal: AgentSignalResponse
     disclaimer: str
 
 
@@ -281,6 +322,29 @@ def _fetch_analysis_bundle(
     """Yahoo Finance pull routed by asset class."""
     normalized = stock_service.normalize_ticker(ticker)
     asset_class = classify_asset(normalized)
+    cache = get_cache_service()
+    cache_key = f"analysis_bundle:{normalized}"
+    cached = cache.get_json(cache_key)
+    if isinstance(cached, dict) and all(
+        k in cached for k in ("stock", "fundamentals", "strategy_frameworks", "price_history", "display_name")
+    ):
+        cached_class = cached.get("asset_class")
+        if isinstance(cached_class, str):
+            try:
+                cached_class = AssetClass(cached_class)
+            except ValueError:
+                cached_class = asset_class
+        elif cached_class is None:
+            cached_class = asset_class
+        return (
+            cached["stock"],
+            cached["fundamentals"],
+            cached["strategy_frameworks"],
+            cached["price_history"],
+            cached_class,
+            str(cached["display_name"]),
+        )
+
     yft = yf.Ticker(normalized)
     history = yft.history(period="6mo", interval="1d", auto_adjust=False)
     stock_payload = stock_service.technicals_from_history(normalized, history)
@@ -300,6 +364,17 @@ def _fetch_analysis_bundle(
         fundamentals_payload = _stub_fundamentals(normalized, asset_class)
         strategy_frameworks = _stub_strategy_frameworks()
 
+    cache.set_json(
+        cache_key,
+        {
+            "stock": stock_payload,
+            "fundamentals": fundamentals_payload,
+            "strategy_frameworks": strategy_frameworks,
+            "price_history": price_history,
+            "asset_class": asset_class.value,
+            "display_name": display_name,
+        },
+    )
     return stock_payload, fundamentals_payload, strategy_frameworks, price_history, asset_class, display_name
 
 
@@ -371,13 +446,28 @@ async def _build_full_stock_analysis(
         "news_analysis": news_payload,
         "strategy_frameworks": strategy_frameworks,
     }
-    brief = get_decision_brief_service().build(
+    workflow_result = get_workflow_orchestrator().execute(
+        {
+            "ticker": normalized_ticker,
+            "stock": stock_payload,
+            "news": news_payload,
+            "fundamentals": fundamentals_payload,
+            "macro": macro_payload,
+            "strategy_frameworks": strategy_frameworks,
+        }
+    )
+    brief = workflow_result.get("decision_brief") or get_decision_brief_service().build(
         stock=stock_payload,
         news=news_payload,
         asset_class=resolved_class,
+        context={
+            "macro": macro_payload,
+            "fundamentals": fundamentals_payload,
+            "strategy_frameworks": strategy_frameworks,
+        },
     )
     if is_equity_asset(resolved_class):
-        strategy_ratings = get_strategy_ratings_service().build(
+        strategy_ratings = workflow_result.get("strategy_ratings") or get_strategy_ratings_service().build(
             stock=stock_payload,
             news=news_payload,
             fundamentals=fundamentals_payload,
@@ -385,6 +475,16 @@ async def _build_full_stock_analysis(
         )
     else:
         strategy_ratings = _stub_strategy_ratings()
+    agent_signal = workflow_result.get("agent_signal") or {
+        "ticker": normalized_ticker,
+        "signal": workflow_result.get("signal", "hold"),
+        "confidence": float(workflow_result.get("confidence", 0.5)),
+        "notes": workflow_result.get("notes") or ["Agent signal unavailable."],
+        "langgraph_enabled": settings.langgraph_enabled,
+        "trace": workflow_result.get("trace") or [],
+    }
+    if "trace" not in agent_signal:
+        agent_signal["trace"] = workflow_result.get("trace") or []
 
     return {
         **merged,
@@ -395,6 +495,7 @@ async def _build_full_stock_analysis(
         "fundamentals": fundamentals_payload,
         "macro": macro_payload,
         "strategy_ratings": strategy_ratings,
+        "agent_signal": agent_signal,
         "disclaimer": DISCLAIMER,
     }
 
@@ -573,3 +674,64 @@ async def analyze_stock_with_news(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unexpected error while analyzing stock.",
         ) from exc
+
+
+@router.post(
+    "/ask",
+    summary="Ask a grounded research question",
+    description="Uses local RAG retrieval and optional Ollama synthesis with citations.",
+    response_model=AskResponse,
+)
+async def ask_stock_question(payload: AskRequest) -> dict:
+    normalized_ticker = payload.ticker.strip().upper()
+    rag = get_rag_service()
+    result = await run_in_threadpool(
+        rag.ask,
+        ticker=normalized_ticker,
+        question=payload.question.strip(),
+        context={},
+    )
+    return {
+        "ticker": normalized_ticker,
+        "question": payload.question.strip(),
+        **result,
+    }
+
+
+async def _chat_stream_events(*, ticker: str, question: str) -> AsyncIterator[str]:
+    normalized = ticker.strip().upper()
+    steps = [
+        ("trace", "Starting research copilot workflow."),
+        ("trace", f"Fetching analysis context for {normalized}."),
+        ("trace", "Retrieving grounded evidence chunks."),
+        ("trace", "Synthesizing answer with local model when enabled."),
+    ]
+    for event_type, message in steps:
+        yield f"data: {json.dumps({'type': event_type, 'message': message})}\n\n"
+        await asyncio.sleep(0.05)
+
+    rag = get_rag_service()
+    answer_payload = await run_in_threadpool(
+        rag.ask,
+        ticker=normalized,
+        question=question,
+        context={},
+    )
+    yield f"data: {json.dumps({'type': 'answer', **answer_payload})}\n\n"
+    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+
+@router.get(
+    "/chat/stream",
+    summary="Stream copilot chat response",
+    description="Server-sent events stream for chat UI with trace and grounded answer.",
+)
+async def chat_stream(
+    ticker: str = Query(..., min_length=1, max_length=10),
+    question: str = Query(..., min_length=3, max_length=500),
+) -> StreamingResponse:
+    return StreamingResponse(
+        _chat_stream_events(ticker=ticker, question=question),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )

@@ -26,6 +26,7 @@ class NewsArticlePayload(TypedDict):
     summary: str
     sentiment: SentimentLabel
     risk_keywords: list[str]
+    url: str
 
 
 class NewsAnalysisPayload(TypedDict):
@@ -205,6 +206,8 @@ class NewsAnalysisService:
         sentiment = self._score_sentiment(title=title, summary=summary)
         risk_keywords = self._detect_risk_keywords(title=title, summary=summary)
 
+        link = self._text_or_default(item.findtext("link"), "")
+
         return NewsArticlePayload(
             title=title,
             source=source,
@@ -212,6 +215,7 @@ class NewsAnalysisService:
             summary=summary,
             sentiment=sentiment,
             risk_keywords=risk_keywords,
+            url=link,
         )
 
     @staticmethod

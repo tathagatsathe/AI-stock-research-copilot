@@ -157,6 +157,7 @@ class StubSuccessNewsService(NewsAnalysisService):
                     "summary": "Profit growth and upgrade chatter.",
                     "sentiment": "bullish",
                     "risk_keywords": [],
+                    "url": "https://news.example/aapl",
                 }
             ],
             "overall_sentiment": "bullish",
@@ -182,6 +183,7 @@ class StubNewsSuccessService(NewsAnalysisService):
                     "summary": "Strong quarter with improved guidance.",
                     "sentiment": "bullish",
                     "risk_keywords": [],
+                    "url": "",
                 }
             ],
             "overall_sentiment": "bullish",
@@ -365,6 +367,8 @@ def test_analyze_endpoint_integration_success(monkeypatch: pytest.MonkeyPatch) -
     }
     assert "strategy_frameworks" in payload
     assert "buffett_quality_dcf" in payload["strategy_frameworks"]
+    assert payload["agent_signal"]["signal"] in {"buy", "hold", "sell"}
+    assert isinstance(payload["agent_signal"]["trace"], list)
     assert "disclaimer" in payload and payload["disclaimer"]
 
 

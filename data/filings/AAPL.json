@@ -1,0 +1,17 @@
+{
+  "ticker": "AAPL",
+  "sections": [
+    {
+      "name": "risk_factors",
+      "source": "sec_10k_excerpt",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193",
+      "text": "Apple faces intense competition across smartphones, personal computers, tablets, wearables, and services. Supply chain concentration and geopolitical tensions may disrupt manufacturing or increase costs. Regulatory scrutiny related to app store policies, privacy, and antitrust could materially affect the services business."
+    },
+    {
+      "name": "business",
+      "source": "sec_10k_excerpt",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193",
+      "text": "Apple designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories, and sells related services. The Company reports net sales across Americas, Europe, Greater China, Japan, and Rest of Asia Pacific."
+    }
+  ]
+}
