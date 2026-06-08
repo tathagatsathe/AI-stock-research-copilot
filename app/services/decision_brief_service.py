@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Final, Literal
 
+from app.services.asset_registry import AssetClass, is_equity_asset
+
 DecisionVerdict = Literal["watch", "cautious", "elevated_risk"]
 EvidenceQuality = Literal["high", "medium", "low"]
 
@@ -22,7 +24,13 @@ class DecisionBriefService:
     _RSI_STRETCHED_LOW: Final[float] = 32.0
     _RSI_WEAK: Final[float] = 38.0
 
-    def build(self, *, stock: dict, news: dict) -> dict:
+    def build(
+        self,
+        *,
+        stock: dict,
+        news: dict,
+        asset_class: AssetClass | None = None,
+    ) -> dict:
         ticker = str(stock.get("ticker", "")).strip().upper()
         price = float(stock["current_price"])
         sma = float(stock["sma_50"])
@@ -52,6 +60,7 @@ class DecisionBriefService:
             sma=sma,
             overall_sentiment=overall_sentiment,
             news_error=news_error,
+            asset_class=asset_class,
         )
         tensions = self._tensions(
             rsi=rsi,
@@ -115,8 +124,27 @@ class DecisionBriefService:
         sma: float,
         overall_sentiment: str,
         news_error: str | None,
+        asset_class: AssetClass | None = None,
     ) -> list[str]:
-        if price >= sma:
+        asset_label = {
+            AssetClass.GLOBAL_INDEX: "index",
+            AssetClass.FOREX: "forex pair",
+            AssetClass.CRYPTO: "crypto asset",
+            AssetClass.COMMODITY: "commodity",
+        }.get(asset_class or AssetClass.US_EQUITY, "instrument")
+
+        if asset_class and not is_equity_asset(asset_class):
+            if price >= sma:
+                trend = (
+                    f"{ticker} ({asset_label}) is at or above its 50-day average—"
+                    "medium-term price trend leans supportive."
+                )
+            else:
+                trend = (
+                    f"{ticker} ({asset_label}) is below its 50-day average—"
+                    "medium-term trend is soft until price reclaims that level."
+                )
+        elif price >= sma:
             trend = f"{ticker} is trading at or above its 50-day average—medium-term trend leans supportive."
         else:
             trend = f"{ticker} is below its 50-day average—medium-term trend is soft until price reclaims that level."

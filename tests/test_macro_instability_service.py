@@ -29,3 +29,26 @@ def test_snapshot_fallback_when_history_empty(monkeypatch: pytest.MonkeyPatch) -
     assert payload["coverage"] == "low"
     assert payload["error"] is not None
     assert payload["instability_score_1_10"] == 5
+    assert payload["region"] == "us"
+
+
+def test_snapshot_uses_india_region_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.macro_instability_service as macro_mod
+
+    captured: dict[str, str] = {}
+
+    class DummyTicker:
+        def __init__(self, symbol: str) -> None:
+            captured["symbol"] = symbol
+
+        def history(self, **kwargs):
+            return pd.DataFrame({"Close": [15.0, 16.0, 17.0, 18.0, 19.0, 20.0]})
+
+    monkeypatch.setattr(macro_mod.yf, "Ticker", DummyTicker)
+
+    svc = MacroInstabilityService()
+    payload = svc.snapshot(region="india")
+
+    assert captured["symbol"] == "^INDIAVIX"
+    assert payload["region"] == "india"
+    assert payload["coverage"] == "high"

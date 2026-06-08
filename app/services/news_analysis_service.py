@@ -7,6 +7,8 @@ from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from html import unescape
 from typing import Final, Literal, Optional, TypedDict
+
+from app.services.asset_registry import AssetClass
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus
 from urllib.request import urlopen
@@ -43,9 +45,11 @@ class NewsFetchError(NewsAnalysisError):
 
 
 class NewsAnalysisService:
-    _GOOGLE_NEWS_BASE_URL: Final[str] = (
-        "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
-    )
+    _GOOGLE_NEWS_LOCALES: Final[dict[str, str]] = {
+        "us": "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
+        "india": "https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en",
+        "global": "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
+    }
     _MAX_ARTICLES: Final[int] = 5
     _REQUEST_TIMEOUT_SECONDS: Final[float] = 6.0
     _RISK_KEYWORDS: Final[tuple[str, ...]] = (
@@ -91,12 +95,22 @@ class NewsAnalysisService:
         kw: re.compile(rf"\b{re.escape(kw)}\b") for kw in _RISK_KEYWORDS
     }
 
-    def analyze_ticker_news(self, ticker: str) -> NewsAnalysisPayload:
+    def analyze_ticker_news(
+        self,
+        ticker: str,
+        *,
+        asset_class: AssetClass | None = None,
+        display_name: str | None = None,
+    ) -> NewsAnalysisPayload:
         normalized_ticker = ticker.strip().upper()
         if not normalized_ticker:
             raise NewsAnalysisError("Ticker symbol cannot be empty for news analysis.")
 
-        items = self._fetch_news_items(normalized_ticker)
+        items = self._fetch_news_items(
+            normalized_ticker,
+            asset_class=asset_class,
+            display_name=display_name,
+        )
         articles = [self._parse_item(item) for item in items[: self._MAX_ARTICLES]]
 
         all_risk_keywords = sorted({kw for article in articles for kw in article["risk_keywords"]})
@@ -119,9 +133,51 @@ class NewsAnalysisService:
             error=error_message,
         )
 
-    def _fetch_news_items(self, ticker: str) -> list[ElementTree.Element]:
-        query = quote_plus(f"{ticker} stock")
-        url = self._GOOGLE_NEWS_BASE_URL.format(query=query)
+    def _build_news_query(
+        self,
+        ticker: str,
+        *,
+        asset_class: AssetClass | None,
+        display_name: str | None,
+    ) -> tuple[str, str]:
+        label = (display_name or ticker).strip()
+        locale_key = "us"
+
+        if asset_class == AssetClass.INDIA_EQUITY:
+            locale_key = "india"
+            query_text = f"{label} NSE stock"
+        elif asset_class == AssetClass.GLOBAL_INDEX:
+            locale_key = "global"
+            query_text = f"{label} index market"
+        elif asset_class == AssetClass.FOREX:
+            locale_key = "global"
+            query_text = f"{label} forex currency"
+        elif asset_class == AssetClass.CRYPTO:
+            locale_key = "global"
+            query_text = f"{label} cryptocurrency"
+        elif asset_class == AssetClass.COMMODITY:
+            locale_key = "global"
+            query_text = f"{label} commodity futures"
+        else:
+            query_text = f"{ticker} stock"
+
+        return query_text, locale_key
+
+    def _fetch_news_items(
+        self,
+        ticker: str,
+        *,
+        asset_class: AssetClass | None = None,
+        display_name: str | None = None,
+    ) -> list[ElementTree.Element]:
+        query_text, locale_key = self._build_news_query(
+            ticker,
+            asset_class=asset_class,
+            display_name=display_name,
+        )
+        query = quote_plus(query_text)
+        base_url = self._GOOGLE_NEWS_LOCALES.get(locale_key, self._GOOGLE_NEWS_LOCALES["us"])
+        url = base_url.format(query=query)
         try:
             with urlopen(url, timeout=self._REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310
                 xml_bytes = response.read()

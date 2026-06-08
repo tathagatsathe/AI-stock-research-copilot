@@ -14,6 +14,8 @@ from typing import Any, Final
 import pandas as pd
 import yfinance as yf
 
+from app.services.asset_registry import AssetClass
+
 logger = logging.getLogger(__name__)
 
 EQUITY_RISK_PREMIUM: Final[float] = 0.05
@@ -49,25 +51,29 @@ def _series_for_columns(frame: pd.DataFrame | None, row_name: str) -> pd.Series 
     return frame.loc[row_name]
 
 
-def _fetch_risk_free_rate() -> tuple[float | None, list[str]]:
+def _fetch_risk_free_rate(
+    *,
+    treasury_symbol: str = "^TNX",
+    treasury_label: str = "10-Year Treasury yield (^TNX)",
+) -> tuple[float | None, list[str]]:
     warnings: list[str] = []
     try:
-        tnx = yf.Ticker("^TNX")
+        tnx = yf.Ticker(treasury_symbol)
         hist = tnx.history(period="5d", interval="1d")
         if hist is None or hist.empty or "Close" not in hist.columns:
-            warnings.append("Could not load 10-Year Treasury yield (^TNX).")
+            warnings.append(f"Could not load {treasury_label}.")
             return None, warnings
         close = hist["Close"].dropna()
         if close.empty:
-            warnings.append("10-Year Treasury history was empty.")
+            warnings.append(f"{treasury_label} history was empty.")
             return None, warnings
-        # Yahoo quotes ^TNX close in yield percent points (e.g. 4.36 => 4.36%).
+        # Yahoo quotes treasury closes in yield percent points (e.g. 4.36 => 4.36%).
         rf_pct_points = float(close.iloc[-1])
         rf = rf_pct_points / 100.0
         return rf, warnings
     except Exception:
-        logger.exception("Failed to fetch ^TNX")
-        warnings.append("Unexpected error while fetching 10-Year Treasury yield.")
+        logger.exception("Failed to fetch %s", treasury_symbol)
+        warnings.append(f"Unexpected error while fetching {treasury_label}.")
         return None, warnings
 
 
@@ -430,6 +436,7 @@ class StrategyFrameworksService:
         normalized_symbol: str,
         fundamentals: dict[str, Any],
         stock: dict[str, Any],
+        asset_class: AssetClass | None = None,
     ) -> dict[str, Any]:
         fields = fundamentals.get("fields") or {}
         info: dict[str, Any] = {}
@@ -439,7 +446,20 @@ class StrategyFrameworksService:
             logger.warning("strategy_frameworks: ticker.info failed for %s", normalized_symbol)
 
         beta = _num(info.get("beta"))
-        rf, rf_warnings = _fetch_risk_free_rate()
+        if asset_class == AssetClass.INDIA_EQUITY:
+            rf, rf_warnings = _fetch_risk_free_rate(
+                treasury_symbol="^IN10Y",
+                treasury_label="India 10-Year G-Sec yield (^IN10Y)",
+            )
+            if rf is None:
+                india_rf, india_warnings = _fetch_risk_free_rate(
+                    treasury_symbol="^TNX",
+                    treasury_label="US 10-Year Treasury yield (^TNX) fallback",
+                )
+                rf = india_rf
+                rf_warnings = rf_warnings + india_warnings
+        else:
+            rf, rf_warnings = _fetch_risk_free_rate()
 
         financials = None
         balance_sheet = None
